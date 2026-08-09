@@ -391,6 +391,7 @@ runs the full non-model validation gate:
 - TypeScript typecheck;
 - `vitest`;
 - Vite production build;
+- staging of the bundle resources Tauri's build script validates;
 - `cargo fmt --check`;
 - `clippy`;
 - Rust tests.

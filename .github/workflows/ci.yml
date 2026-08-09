@@ -130,6 +130,27 @@ jobs:
       - run: npm run build
         working-directory: src/desktop
 
+      # The sidecar the staging step copies into the bundle. Nothing here syncs
+      # a Python environment — the binary itself is the artifact, because that
+      # is what ships and rebuilds the environment on the user's machine.
+      - uses: astral-sh/setup-uv@v5
+
+      # `tauri.conf.json` points `externalBin` and `bundle.resources` at
+      # `build/desktop/staging/`, which is generated and gitignored, and Tauri's
+      # build script refuses to run when those paths are missing. `tauri dev`
+      # and `tauri build` create them through `beforeDevCommand`/
+      # `beforeBuildCommand`; the cargo commands below have no such hook, so
+      # they need the tree staged first. A development machine has one lying
+      # around from an earlier build and a clean checkout does not, which is why
+      # this was only ever visible here.
+      #
+      # `make stage-desktop` rather than the npm script directly: local CI
+      # parity and this job then invoke the same target, and neither can drift
+      # from the other without the drift being visible in one file.
+      - name: Stage the desktop bundle resources
+        run: make stage-desktop
+        working-directory: ${{ github.workspace }}
+
       - name: Format
         run: cargo fmt --check
 

@@ -96,6 +96,12 @@ installed app would use a bundled executable.
 make build-desktop   # .app and .dmg
 ```
 
+Both stage `build/desktop/staging/` first — the uv sidecar and the Python
+project that `tauri.conf.json` bundles. Tauri's build script checks those paths
+exist, so a bare `cargo check`, `cargo clippy` or `cargo test` needs them too
+and has no hook that creates them. `make stage-desktop` is that step on its own,
+and it is what CI runs before the cargo commands.
+
 ## What it shows
 
 Server state and endpoint, the loaded model and its quantization, the
