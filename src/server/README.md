@@ -55,11 +55,12 @@ schema. Pass the provider on the command line rather than editing
 ```sh
 codex exec \
   -c model="gpt-oss-20b" \
-  -c model_provider="quantum" \
-  -c model_providers.quantum.name="Quantum Codex" \
-  -c model_providers.quantum.base_url="http://127.0.0.1:8123/v1" \
-  -c model_providers.quantum.wire_api="responses" \
-  -c 'model_providers.quantum.auth={command="echo", args=["local-token"]}' \
+  -c model_reasoning_effort="medium" \
+  -c model_provider="qcs" \
+  -c model_providers.qcs.name="QCS" \
+  -c model_providers.qcs.base_url="http://127.0.0.1:8123/v1" \
+  -c model_providers.qcs.wire_api="responses" \
+  -c 'model_providers.qcs.auth={command="echo", args=["local"]}' \
   "your prompt"
 ```
 

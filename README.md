@@ -1,176 +1,63 @@
 # Quantum Codex GPT-OSS Server
 
-**Run [OpenAI Codex](https://developers.openai.com/codex/cli) against GPT-OSS on
-your own Mac.** No cloud, no API key, no telemetry — a local server that speaks
-the Responses API exactly as Codex uses it, and a macOS app to operate it.
+![QCS Screenshot](assets/app-01.jpg)
 
-> **Version 1.0.0.**
-> The core loop is validated end to end against real Codex and real weights.
-> The desktop interface has had far less real-world use than the server. Expect
-> rough edges, expect to read a log, and do not put this in front of anything
-> you cannot afford to restart. Interfaces and on-disk formats may change.
 
----
+**Run OpenAI Codex locally against GPT-OSS on your Apple Silicon Mac.**
 
-## Why this exists
+Quantum Codex GPT-OSS Server is a native Codex backend for **GPT-OSS 20B and 120B on MLX**. It gives Codex the protocol, model metadata, reasoning continuity, tool routing and prompt reuse it expects, with a macOS app that handles the runtime, models and server for you.
 
-You can already point Codex at a generic local backend. The problem is that
-Codex is not a generic client, and GPT-OSS is not a generic model.
+**No cloud model, no API key, no telemetry.** Start the app, download or locate a model, start the server, copy the generated Codex command, and work normally.
 
-Codex talks the **Responses API**, not Chat Completions: reasoning is a
-first-class item that must survive across tool turns, tool calls end the
-assistant turn, and metadata is fetched from `GET /v1/models` in Codex's own
-schema. GPT-OSS talks **Harmony**: private reasoning on an `analysis` channel,
-tool calls on `commentary`, answers on `final`, tools declared in real
-namespaces, and `<|call|>` as an assistant stop token the model's own EOS list
-does not contain.
-
-A generic OpenAI-compatible shim flattens all of that into text. What you lose
-is not cosmetic:
-
-- **reasoning continuity** — drop the `analysis` channel between a tool call and
-  its result and the model restarts the task instead of continuing it;
-- **tool routing** — Codex dispatches on `name` and `namespace` as separate
-  fields, so a flattened `namespace.name` is refused outright;
-- **prompt reuse** — Codex replays the whole conversation every turn, so each
-  prompt extends the last. Reusing that prefix is the difference between 1.56 s
-  and 0.12 s of prefill on a 3-turn session;
-- **honest limits** — a wrong `/v1/models` shape does not error, it silently
-  degrades into fallback defaults.
-
-This project goes deep on **one** path instead of wide across many:
-
-```
-Harness        Codex CLI 0.147.0
-Model family   GPT-OSS (20B / 120B, mxfp4)
-Model protocol OpenAI Harmony
-Runtime        MLX
-Platform       macOS, Apple Silicon
-Wire protocol  Responses API, as Codex actually uses it
-```
-
-The specialisation is a design constraint, not a temporary limitation. This is
-not an Ollama replacement, not a universal Hugging Face runtime, and not a
-multi-harness adapter. If another Responses-compatible client happens to work,
-that is welcome — it is not a product contract.
+> **Version 1.0.0** · tested with Codex CLI **0.147.0** on Apple Silicon macOS.
 
 ---
 
-## Requirements
+## Highlights
 
-| | |
-| --- | --- |
-| Platform | macOS on Apple Silicon (developed on M3 Ultra) |
-| Memory | 24 GB for the 20B, 96 GB recommended for the 120B |
-| Codex | CLI **0.147.0** — the only version this is tested against |
-| Model | GPT-OSS 20B or 120B in MLX format, mxfp4 |
-| Toolchain | only for a source checkout: Python 3.12, [uv](https://docs.astral.sh/uv/), Node, Rust |
-
-**Which model to use is not a matter of taste.** See
-[Choosing a model](#choosing-a-model) below — it changes what works.
-
----
-
-## Install
-
-### The app
-
-Open `Codex GPT-OSS Server.dmg` and drag it to Applications.
-
-The bundle is **58 MB** and contains no Python, no dependencies, no MLX. On
-first run the app offers to build its own runtime with the `uv` binary it
-carries, producing about **387 MB** under Application Support. This takes a few
-minutes and needs a network connection.
-
-Nothing depends on system Python, Homebrew, your shell `PATH`, or a development
-checkout. The runtime is tracked by a content fingerprint, so an app update that
-changes the server rebuilds it; repairing it never touches your models,
-profiles or settings.
-
-### From source
-
-```sh
-make install       # uv sync + npm install
-make doctor        # environment, runtime and model readiness
-make dev-server    # serve GPT-OSS-20B on 127.0.0.1:8123
-make dev-desktop   # the macOS control plane
-```
+- **Codex-native API** - implements the Responses API and Codex's own `/v1/models` metadata contract, including GPT-OSS base instructions and reasoning levels.
+- **Real agent-loop support** - reasoning survives tool turns, tool results replay correctly, and namespaced tools are preserved instead of flattened into text.
+- **Prompt cache reuse** - repeated Codex turns reuse the shared prompt prefix instead of paying full prefill cost every time. In a measured 3-turn session, prefill dropped from **1.56 s → 0.16 s → 0.12 s**.
+- **Automatic model lifecycle** - the daemon can stay running with no model loaded. GPT-OSS loads on demand and can unload automatically after an idle timeout.
+- **20B and 120B built in** - download, locate or import the supported GPT-OSS models directly from the Models tab.
+- **Resumable downloads** - downloads preflight disk space, can be cancelled, keep partial data and resume instead of starting over.
+- **External-drive friendly** - choose where models are downloaded; unplugged model volumes are reported as `MISSING_VOLUME` rather than treated as deleted.
+- **Per-model settings** - configure reasoning effort, served name, context and other model-specific values independently for 20B and 120B.
+- **Launch Codex without touching your cloud setup** - the app generates an exact one-shot `codex` command, or a persistent `config.toml` fragment for the CLI / VS Code extension.
+- **Local macOS control plane** - Dashboard, Models, Diagnostics, Logs and Configuration in one app.
+- **Private by design** - requests stay on your Mac. Diagnostics do not record prompts, reasoning text, tool arguments or tool outputs.
 
 ---
 
-## Get a model
+## Quick start
 
-Either bring your own or let the app fetch one.
+### 1. Install and start the app
 
-**Import an existing directory** — Models → *Import existing*, or:
+Open `Codex GPT-OSS Server.dmg`, drag **Codex GPT-OSS Server.app** to Applications, then launch it.
 
-```sh
-quantum-codex-server models import ~/models/gpt-oss-20b-mxfp4-bf16
-```
+On first run, click **Install the runtime**. The app builds its own managed Python/MLX environment under Application Support. You do not need Homebrew, a system Python environment or a development checkout.
 
-**Download from Hugging Face** — Models → *Download*, or:
+Then press **Start**. The daemon can run with no model loaded; this is normal.
 
-```sh
-quantum-codex-server models download mlx-community/gpt-oss-20b-MXFP4-Q8
-```
+### 2. Add a model
 
-Downloads preflight free space, resume where they stopped, and cancel for real
-rather than decoratively. The 120B is about 61 GiB.
+Open the **Models** tab.
 
-**Models on external volumes are first-class.** A model whose disk is unplugged
-reports `MISSING_VOLUME`, which is deliberately distinct from `MISSING` — "plug
-the drive in" is not the same problem as "download it again", and a scan never
-removes a model from your library.
+For GPT-OSS 20B or 120B you can:
 
-**Locate** attaches a directory to a specific catalog entry and refuses if it is
-a different model, so a 20B never ends up filed as the 120B. **Scan** walks the
-configured roots and registers what it finds. Both leave your files where they
-are; only *Download* writes anything.
+- click **Download** to fetch it;
+- click **Locate…** if you already have the model on disk;
+- use **Import existing…** or **Scan roots** for an existing library.
 
-**Where downloads go is configurable.** Point it at an external volume and the
-120B never touches your boot disk:
+The download directory is configurable, so large models can live on an external SSD instead of your boot disk.
 
-```sh
-quantum-codex-server models storage ~/models   # show it with no argument
-```
+### 3. Launch Codex
 
-### Per-model configuration
+Return to the **Dashboard** and click **Launch Codex**.
 
-Each model carries its own settings, so the 20B's fast loop and the 120B's
-deeper reasoning do not have to share one compromise:
+Choose the model you want to use. QCS generates the complete command, including the model, reasoning effort and provider configuration.
 
-```sh
-quantum-codex-server models config gpt-oss-120b                       # show
-quantum-codex-server models config gpt-oss-120b reasoning_effort=high
-quantum-codex-server models config gpt-oss-120b max_output_tokens=    # clear
-```
-
-`reasoning_effort` matters more than it looks. Codex offers no way to change the
-effort of a custom provider's model after launch — its picker is for its own
-models — so whatever is set here is what the generated launch command carries.
-GPT-OSS has exactly `low`, `medium` and `high`; the `xhigh`/`max` levels in
-Codex's own list belong to other model families and are never advertised.
-
-### Idle unload
-
-Weights are released after a configurable idle period (default 10 minutes) and
-reloaded transparently on the next request. The daemon keeps running and
-`/v1/models` keeps answering, so Codex never sees the server disappear. Set
-`--model-idle-timeout-minutes 0` to keep the model resident forever, or release
-it now with `quantum-codex-server models unload`.
-
----
-
-## Launch Codex against it
-
-Start the server (from the app, or `quantum-codex-server serve --profile dev`), then
-ask it for the exact command:
-
-```sh
-quantum-codex-server codex launch
-```
-
-which prints something like:
+It looks like this:
 
 ```sh
 codex \
@@ -183,183 +70,343 @@ codex \
   -c 'model_providers.qcs.auth={command="echo", args=["local"]}'
 ```
 
-Everything is passed on the command line: **your `~/.codex/config.toml` is never
-touched**, so your cloud Codex setup keeps working exactly as before.
+Copy it into Terminal. Codex now uses your local GPT-OSS model through QCS.
 
-For the Codex CLI's persistent configuration and for the VS Code extension —
-neither of which takes `-c` overrides — ask for the file form instead:
+That one-shot form **does not modify `~/.codex/config.toml`**, so your normal cloud Codex setup remains untouched.
+
+---
+
+## Persistent Codex / VS Code configuration
+
+If you want QCS to be available globally in Codex CLI or in the VS Code extension, use the persistent form instead:
 
 ```sh
 quantum-codex-server codex launch --config
 ```
 
-It prints a `~/.codex/config.toml` fragment to append yourself, built from the
-same resolved settings as the command above, so the two cannot describe
-different providers.
+or, equivalently:
 
-The `auth` line is not security — this server has no authentication and binds
-loopback. Codex 0.147 only refreshes model metadata for a provider that declares
-command-backed auth; without it Codex never calls `/v1/models` and silently
-falls back to generic defaults.
+```sh
+qcs codex launch --config
+```
 
-No `model_catalog_json` is required. The server serves Codex's own metadata
-schema, including base instructions written for GPT-OSS on Harmony.
+It prints a `config.toml` fragment built from the same model and per-model settings as the one-shot command:
 
----
+```toml
+model = "gpt-oss-20b"
+model_reasoning_effort = "medium"
+model_provider = "qcs"
 
-## Choosing a model
+[model_providers.qcs]
+name = "QCS"
+base_url = "http://127.0.0.1:8123/v1"
+wire_api = "responses"
 
-This is the one finding most likely to surprise you, so it is stated plainly
-rather than buried.
+[model_providers.qcs.auth]
+command = "echo"
+args = ["local"]
+```
 
-**For namespaced tools — MCP, multi-agent, Codex apps — use GPT-OSS-120B.**
+Append that fragment to your own `~/.codex/config.toml` when you want the persistent setup.
 
-Harmony's system prompt carries a single routing sentence, and the namespace in
-it is a hardcoded literal: *"Calls to these tools must go to the commentary
-channel: `'functions'`."* There is no way to make it name any other namespace,
-so a model handed a second namespace is never told how to address it. The two
-models react differently. Measured with a namespace declared and a prompt that
-asks for it, three samples per cell:
-
-| prompt structure | 20B | 120B |
-| --- | --- | --- |
-| namespace declared in the developer block | 0/3 | 2/3 |
-| + explicit routing instruction | **0/3** | **3/3** |
-| namespace declared in the system block | 0/3 | 2/3 |
-| + explicit routing instruction | **0/3** | **3/3** |
-
-The 120B addresses namespaces natively. The 20B never does — it emits
-`functions.spawn_agent`, which Codex refuses with `unsupported call`.
-
-The server keeps the 20B working through **conservative recipient
-normalisation**: when the route a model emitted does not exist, and exactly one
-declared tool justifies a correction structurally, the recipient is normalised
-and the correction is logged. It never chooses between candidates. A name
-declared in two namespaces, a prefix whose remainder is not a member of that
-namespace, and a namespace nothing declared are all forwarded untouched, and
-Codex refuses them.
-
-So: **the 20B is excellent for ordinary coding turns** — shell tools, reasoning,
-long sessions — and is what you want for a fast loop. Reach for the 120B when
-namespaces are involved, or when two namespaces might declare the same tool
-name, which is the case normalisation deliberately will not resolve.
+The `auth` entry is not server security. QCS binds to loopback and has no authentication. Codex 0.147 uses command-backed auth as the gate that enables online model-metadata refreshes; without it, Codex does not fetch QCS's `/v1/models` catalogue and falls back to its bundled defaults.
 
 ---
 
-## What is validated
+## Which model should I use?
 
-Every item below was exercised against real Codex 0.147 and real GPT-OSS
-weights, not mocked.
+### GPT-OSS 20B
 
-- Non-streaming and streaming `/v1/responses`, with a deterministic SSE order
-- Reasoning as first-class `reasoning` items, replayed so continuity survives
-  tool turns
-- Codex-native `GET /v1/models`, with no `model_catalog_json`
-- Sequential function tools, including two calls in one turn chain
-- **Namespaced tools**, with `name` and `namespace` as separate fields
-- **Multi-agent**: `spawn_agent` → real subagent → `wait_agent` → result
-- Prompt-prefix reuse: 1.56 s → 0.16 s → 0.12 s across a real 3-turn session
-- Cancellation and client disconnect leaving neither worker nor cache corrupted
-- Streaming heartbeat during long prefills
-- Packaged first-run bootstrap from bundle resources alone
-- Model library, imports, Hugging Face download, external-volume states
-- Idle model unload: the 20B released at exactly its configured idle period
-  (witnessed at 1 minute; the default is 10), RSS 13.7 GB → 0.6 GB, the daemon
-  still running and `/v1/models` still served, and the next request reloading it
-  transparently in 1.5 s
+Use the **20B** for the fast everyday coding loop when your task mostly uses ordinary Codex shell/file tools.
+
+- much lighter to load;
+- about **12.8 GiB** in the tested mxfp4 build;
+- good for ordinary coding, reasoning and long sessions.
+
+### GPT-OSS 120B
+
+Use the **120B** when you need **namespaced tools**, including MCP-style namespaces, multi-agent flows or Codex apps.
+
+- about **60.8 GiB** in the tested mxfp4 build;
+- materially heavier, but handles real tool namespaces correctly;
+- recommended when multiple namespaces may expose the same tool name.
+
+Measured namespace-routing tests showed the 120B addressing namespaces correctly while the 20B did not. QCS includes conservative recipient normalisation for the 20B when a correction is structurally unambiguous, but it never guesses between multiple candidates.
 
 ---
 
-## Known limitations
+## Model management
 
-**MCP — PARTIAL.** MCP needs no MCP-specific code here: Codex presents an MCP
-server as a namespace and this server carries it. A real MCP server *was*
-reached through Codex, so declaration and dispatch are established. The result
-does not come back, because a non-interactive `codex exec` answers every MCP
-tool call with `user cancelled MCP tool call`, and Codex's one automated
-approval path requires a structured output this server does not implement. This
-is the client's approval behaviour, and no workaround will be added to bypass
-it. Interactive Codex is untested.
+### Download from Hugging Face
 
-**`tool_search` — BLOCKED.** Codex 0.147 does not offer `tool_search` to a
-custom provider. `--enable tool_search` produces a byte-identical tool list, and
-advertising `experimental_supported_tools` changes nothing. No deferred-tool
-protocol will be written without a real client that exercises it.
+Use the **Download** button on a built-in model card, or from a terminal:
 
-**Instruction following on exhaustive tasks — not guaranteed.** The server sends
-GPT-OSS base instructions that tell it to keep working until the task is
-actually resolved. That is steering, not a guarantee. Measured on the 120B at
-both `medium` and `high` effort: asked for an exhaustive repository-wide audit,
-it opened a small fraction of the relevant files and then declared the work
-complete, and strengthening the wording did not change that. If you need
-exhaustive coverage, have the task carry its own checkable completion criterion
-rather than trusting the model's account of what it did.
+```sh
+quantum-codex-server models download mlx-community/gpt-oss-20b-MXFP4-Q8
+```
 
-**Also missing or constrained**
+Downloads:
 
-- No encrypted reasoning; an encrypted-only reasoning item on replay is skipped,
-  degrading continuity for that turn
-- No structured output, no provider-executed hosted tools, no `web_search`
-- One tool call per turn — Harmony's `<|call|>` ends the turn. This is correct
-  semantics, not a limitation to work around
-- One model loaded at a time
-- Prefix reuse is exact-prefix only: a diverging prompt runs cold, because
-  GPT-OSS's sliding-window layers make cache trimming unavailable
-- Diagnostics are in memory and do not survive a restart
-- No diagnostic bundle export, no benchmark command
-- No long-session soak has been run, so bounded resource growth over hours is
-  unestablished
+- check free space on the configured destination volume;
+- report real progress;
+- can be cancelled;
+- keep partial files;
+- resume from retained bytes.
+
+The 120B download is roughly **61 GiB**.
+
+### Import or locate an existing model
+
+```sh
+quantum-codex-server models import ~/models/gpt-oss-20b-mxfp4-bf16
+```
+
+**Locate…** attaches a directory to a known catalogue entry and validates that it is the expected model. A 20B directory will not silently become the 120B entry.
+
+**Scan roots** discovers compatible models without moving them.
+
+### Choose the download location
+
+```sh
+quantum-codex-server models storage ~/models
+```
+
+Run it without a path to show the current destination.
+
+Existing models are not moved when you change the download location; it affects future downloads.
+
+### Configure each model independently
+
+```sh
+quantum-codex-server models config gpt-oss-120b
+quantum-codex-server models config gpt-oss-120b reasoning_effort=high
+quantum-codex-server models config gpt-oss-120b max_output_tokens=
+```
+
+The desktop app exposes the same configuration through **Models → Configure…**.
+
+For GPT-OSS, reasoning effort is `low`, `medium` or `high`. The effective value is automatically included in the generated Codex command/configuration.
 
 ---
 
-## Using it from a terminal
+## Idle model unload
 
-Nothing is reachable only through the app.
+A loaded model does not need to occupy memory forever.
+
+By default, QCS releases the resident model after **10 minutes without inference activity**. The daemon stays alive, `/v1/models` continues to answer, and the next Codex request reloads the model transparently.
+
+Manual unload is also available:
+
+```sh
+quantum-codex-server models unload
+```
+
+Set the idle timeout to `0` if you want a model to remain resident indefinitely.
+
+In a real 20B witness, idle unload reduced process RSS from about **13.7 GB to 0.6 GB**, while keeping the daemon online; the next request reloaded and completed normally.
+
+---
+
+## Requirements
+
+| | |
+| --- | --- |
+| Platform | macOS on Apple Silicon |
+| Memory | 24 GB for GPT-OSS 20B; 96 GB recommended for GPT-OSS 120B |
+| Codex | CLI **0.147.0** - the version currently validated |
+| Models | GPT-OSS 20B or 120B, MLX mxfp4 |
+| Network | Required for first-run runtime setup and model downloads |
+
+The packaged app carries the `uv` bootstrap binary and builds its own managed runtime. The app bundle itself is about **58 MB**; the managed runtime is roughly **387 MB** before model weights.
+
+---
+
+## What QCS is doing differently
+
+QCS is intentionally **not a generic OpenAI-compatible inference server**. It is a Codex backend for GPT-OSS.
+
+Codex and GPT-OSS both have protocol details that generic shims tend to flatten away:
+
+- Codex uses the **Responses API**, not Chat Completions;
+- reasoning is a first-class item that must survive across tool turns;
+- GPT-OSS uses **Harmony** channels (`analysis`, `commentary`, `final`);
+- Codex keeps tool `name` and `namespace` separate;
+- `<|call|>` ends a GPT-OSS tool-call turn even though it is not in the model's normal EOS list;
+- Codex fetches model metadata from `GET /v1/models` using its own `ModelsResponse` schema;
+- QCS supplies Codex-native `base_instructions`, reasoning metadata and context information there.
+
+If these details are flattened into a generic chat-style exchange, Codex may still look superficially functional while losing reasoning continuity, tool routing, prompt reuse or model-specific instructions.
+
+The supported path is deliberately narrow:
+
+```text
+Harness        Codex CLI 0.147.0
+Model family   GPT-OSS 20B / 120B, mxfp4
+Model protocol OpenAI Harmony
+Runtime        MLX
+Platform       macOS, Apple Silicon
+Wire protocol  Responses API as Codex uses it
+```
+
+If another Responses-compatible client happens to work, that is useful, but it is not the product contract.
+
+---
+
+## Prompt cache
+
+![QCS Screenshot 2](assets/app-02.jpg)
+
+Codex replays the conversation prefix on every turn. QCS keeps compatible prompt/KV state so repeated prefixes can be reused instead of recomputed.
+
+A measured three-turn session showed prefill latency dropping from:
+
+```text
+1.56 s → 0.16 s → 0.12 s
+```
+
+The cache is exact-prefix only. If the prompt diverges, the request runs cold; GPT-OSS's sliding-window layers make arbitrary cache trimming unsafe.
+
+Resident prompt cache is cleared when the model unloads. Lifetime hit/miss/reuse counters remain available for diagnostics.
+
+---
+
+## Desktop app
+
+The macOS app is the control plane for the local daemon:
+
+- **Dashboard** - server state, resident model, capabilities, inference and prompt-cache status; Start/Stop/Restart, model unload and Launch Codex.
+- **Models** - built-in 20B/120B catalogue, download/import/locate/scan, download location and per-model settings.
+- **Diagnostics** - runtime and lifecycle diagnostics.
+- **Logs** - full-height server log view.
+- **Configuration** - named server profiles and server-wide settings.
+
+The daemon lifetime is independent from the GUI. Closing the window does not have to stop a healthy server; reopening the app can reattach to it.
+
+---
+
+## Terminal reference
+
+Everything available in the app can also be driven from the CLI.
 
 | Command | Purpose |
 | --- | --- |
 | `serve [--profile NAME]` | Run the inference server |
 | `status` | Report on the running server |
-| `models list \| scan \| import \| download \| forget \| roots \| inspect` | The model library |
-| `models unload` | Release the resident model; the server keeps running |
+| `models list \| scan \| import \| download \| forget \| roots \| inspect` | Model library |
+| `models unload` | Release the resident model while keeping the server running |
+| `models storage [PATH]` | Show/change the model download location |
+| `models config SLUG [field=value …]` | Per-model settings |
 | `requests` | Recent request diagnostics |
-| `cache stats \| clear` | Prompt cache counters and reset |
+| `cache stats \| clear` | Prompt-cache counters and reset |
 | `profiles list \| show \| set \| add \| remove \| default` | Named server configurations |
-| `models storage [PATH]` | Where downloads are written |
-| `models config SLUG [field=value …]` | Per-model settings, including reasoning effort |
-| `codex launch [PROMPT]` | Print the codex command that talks to this server |
-| `codex launch --config` | Print the `config.toml` fragment instead |
+| `codex launch [PROMPT]` | Print the one-shot Codex command |
+| `codex launch --config` | Print the persistent `config.toml` fragment |
 | `doctor` | Environment, runtime and model readiness |
 
-The executable installs under two names. `quantum-codex-server` is the canonical
-one used throughout this document; **`qcs` is a shorter alias for exactly the
-same program**, so `qcs status` and `quantum-codex-server status` are
-interchangeable.
+The executable is installed under two names:
 
-The server binds `127.0.0.1`. A LAN bind must be a deliberate act.
+- `quantum-codex-server` - canonical name;
+- `qcs` - short alias for the same program.
+
+For example:
+
+```sh
+qcs status
+qcs models list
+qcs codex launch
+```
+
+The server binds to `127.0.0.1` by default.
 
 ---
 
-## Development
+## What has been validated
+
+The following have been exercised against real Codex 0.147 and real GPT-OSS weights unless noted otherwise:
+
+- streaming and non-streaming `/v1/responses`;
+- deterministic SSE event ordering;
+- reasoning continuity across tool turns;
+- Codex-native `GET /v1/models` and `base_instructions` delivery;
+- sequential function calls;
+- namespaced tools;
+- real multi-agent `spawn_agent → wait_agent` flow;
+- prompt-prefix reuse;
+- cancellation and client disconnect handling;
+- streaming heartbeat during long prefills;
+- packaged first-run managed-runtime bootstrap;
+- model import/download/library/external-volume states;
+- idle model unload and transparent reload;
+- long real Codex runs on GPT-OSS 120B without the earlier tool-loop termination failure.
+
+---
+
+## Known limitations
+
+### MCP - partial
+
+Codex exposes MCP servers as tool namespaces, and QCS carries those namespaces correctly. A real MCP server was reached through Codex. In non-interactive `codex exec`, however, the client cancelled the MCP tool call because of its own approval flow. Interactive Codex MCP remains unvalidated.
+
+### `tool_search` - blocked by Codex 0.147 custom-provider behavior
+
+Codex 0.147 does not currently expose `tool_search` to this custom provider, even when the feature is enabled. QCS does not invent a deferred-tool protocol that the client does not exercise.
+
+### Exhaustive-task instruction following is not guaranteed
+
+QCS supplies GPT-OSS with persistence/completion instructions, but prompting cannot guarantee that a model's self-reported coverage is truthful. In controlled repository-wide audit tests, GPT-OSS 120B sometimes declared exhaustive completion after inspecting only part of the requested surface. For genuinely exhaustive work, use a task/skill with an independently checkable completion criterion.
+
+### Other constraints
+
+- No encrypted-reasoning replay support; encrypted-only reasoning items are skipped on replay.
+- No structured output, provider-hosted tools or `web_search` implementation.
+- Harmony emits one tool call per assistant turn because `<|call|>` ends the turn.
+- One inference model is resident at a time.
+- Prompt reuse is exact-prefix only.
+- Diagnostics are in memory and do not survive daemon restart.
+- No diagnostic bundle export or built-in benchmark command yet.
+- No multi-hour resource-soak guarantee has been established.
+
+---
+
+## From source
+
+Only needed if you are developing QCS rather than installing the app.
+
+```sh
+make install       # uv sync + npm install
+make doctor        # environment, runtime and model readiness
+make dev-server    # start the development server
+make dev-desktop   # start the Tauri desktop app
+```
+
+---
+
+## Development and CI
 
 ```sh
 make ci
 ```
 
-runs the whole gate: `ruff`, `pytest`, TypeScript, `vitest`, the Vite build,
-`cargo fmt --check`, `clippy` and `cargo test`. It runs no inference and needs
-no model, so it is safe on any machine.
+runs the full non-model validation gate:
+
+- `ruff`;
+- Python tests;
+- TypeScript typecheck;
+- `vitest`;
+- Vite production build;
+- `cargo fmt --check`;
+- `clippy`;
+- Rust tests.
+
+CI does **not** download or run GPT-OSS weights. A green CI run validates protocol/configuration/library/UI logic, not whether a particular machine can successfully run a 20B or 120B model.
 
 ---
 
 ## Privacy
 
-Everything runs on your machine. There is no telemetry and no outbound call
-except a model download you asked for.
+Everything runs on your Mac. There is no telemetry and no outbound request except downloads you explicitly start.
 
-Request diagnostics record numbers, tool names and outcomes — **never prompts,
-never reasoning text, never tool arguments or outputs.** A test fails if such a
-field appears.
+Request diagnostics record operational metadata such as counters, tool names and outcomes - **not prompts, reasoning text, tool arguments or tool outputs**.
 
 ---
 
