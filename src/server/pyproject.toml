@@ -1,0 +1,59 @@
+[project]
+name = "quantum-codex"
+version = "1.0.0"
+description = "Quantum Codex GPT-OSS Server: Codex + GPT-OSS + Harmony on MLX, Apple Silicon"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.14"
+
+# Critical versions are pinned exactly, not ranged (cahier 46). A mlx-lm,
+# openai-harmony or MLX bump must be a deliberate task with a real Codex run
+# behind it, never something a fresh `uv sync` decides on its own.
+dependencies = [
+    "mlx==0.32.0",
+    "mlx-lm==0.31.3",
+    "openai-harmony==0.0.8",
+    "fastapi>=0.141,<1",
+    "uvicorn[standard]>=0.52,<1",
+    "pydantic>=2.13,<3",
+]
+
+# `quantum-codex-server` is the canonical name: this executable controls the
+# Quantum Codex GPT-OSS Server, and the old `quantum-codex` read as though it
+# were a Codex fork. `qcs` is the convenience alias, matching the bundle id and
+# the Codex provider id. Both are the same entry point.
+#
+# The old name is deliberately not kept as a third alias. Nothing has been
+# released yet, so there is no compatibility to preserve -- only a misleading
+# name that would become legacy the moment v1.0.0 ships.
+#
+# The *distribution* stays `quantum-codex`: it is not user-facing, and renaming
+# it would churn the lockfile and the managed-runtime fingerprint for cosmetics.
+[project.scripts]
+quantum-codex-server = "quantum_codex.cli:main"
+qcs = "quantum_codex.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+    "ruff>=0.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["quantum_codex"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"

@@ -1,0 +1,283 @@
+/* Dense and operational rather than decorative: this is a panel an operator
+   watches while a session runs, so density beats whitespace. */
+
+:root {
+  --bg: #16181d;
+  --panel: #1e2128;
+  --line: #2b2f38;
+  --text: #e6e8ec;
+  --muted: #9aa1ad;
+  --live: #4ade80;
+  --down: #f87171;
+  --accent: #7dd3fc;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+}
+
+main { padding: 20px 24px 32px; max-width: 1100px; margin: 0 auto; }
+
+header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: 0.2px; }
+h2 {
+  font-size: 11px; font-weight: 600; margin: 0 0 10px;
+  text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted);
+}
+
+.pill {
+  font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.pill-live { background: rgba(74, 222, 128, 0.15); color: var(--live); }
+.pill-down { background: rgba(248, 113, 113, 0.15); color: var(--down); }
+
+.endpoint { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+.notice {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 14px; color: var(--muted);
+}
+.notice-error { border-color: rgba(248, 113, 113, 0.4); color: #fca5a5; }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+button {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px;
+  padding: 7px 14px; font: inherit; font-weight: 500; cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: 0.4; cursor: default; }
+
+.grid {
+  display: grid; gap: 12px; margin-bottom: 16px;
+  /* Three across when there is room, then two, then one. `auto-fit` with a
+     minimum does this by measurement rather than by breakpoint, so it holds at
+     window sizes nobody screenshotted. The max of 1fr stops a lone card on the
+     last row from stretching across the width. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+}
+
+.panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px;
+}
+
+dl { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+dd.wrap {
+  text-align: left; grid-column: 1 / -1;
+  font-size: 11px; color: var(--muted); word-break: break-all;
+}
+
+pre {
+  margin: 0; padding: 10px 12px; background: #12141a;
+  border: 1px solid var(--line); border-radius: 7px;
+  font: 11px/1.6 ui-monospace, "SF Mono", monospace;
+  white-space: pre-wrap; word-break: break-word; overflow-x: auto;
+}
+.command { margin-bottom: 10px; color: var(--accent); }
+.empty { color: var(--muted); margin: 0; }
+
+.searched { list-style: none; margin: 0 0 12px; padding: 0; font-size: 11px; }
+.searched li {
+  font-family: ui-monospace, "SF Mono", monospace;
+  padding: 2px 0; color: var(--muted); word-break: break-all;
+}
+.searched li.found { color: var(--live); }
+.setup-log { margin-top: 12px; max-height: 220px; overflow-y: auto; color: var(--muted); }
+
+/* First-run, update and repair: shown alone, so it gets room to explain. */
+.setup { max-width: 720px; padding-top: 60px; }
+.setup .panel { padding: 22px 24px; }
+.setup h2 { font-size: 13px; margin-bottom: 12px; }
+.prose { color: var(--text); line-height: 1.6; margin: 0 0 16px; }
+.setup-facts {
+  display: grid; grid-template-columns: auto 1fr; gap: 6px 16px;
+  margin: 0 0 18px; font-size: 12px;
+}
+.setup-facts dt { color: var(--muted); }
+.setup-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.setup-facts dd.wrap { word-break: break-all; color: var(--muted); }
+.setup .actions { margin-bottom: 0; align-items: center; }
+
+/* View switching, and the library. */
+.views { display: flex; gap: 4px; margin-left: 8px; }
+.view-tab {
+  padding: 4px 12px; font-size: 12px; border-color: transparent;
+  background: transparent; color: var(--muted);
+}
+.view-tab[aria-selected="true"] {
+  background: var(--panel); border-color: var(--line); color: var(--text);
+}
+
+.library { list-style: none; margin: 14px 0 0; padding: 0; }
+.library-row { border-top: 1px solid var(--line); padding: 14px 0; }
+.library-row:first-child { border-top: none; }
+.library-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.library-spec { color: var(--muted); font-size: 11px; margin-left: auto; }
+.library-path {
+  display: block; margin: 6px 0; color: var(--muted);
+  font-size: 11px; word-break: break-all;
+}
+.library-detail { margin: 4px 0; color: var(--muted); font-size: 12px; }
+.library-actions { display: flex; gap: 8px; margin-top: 10px; }
+.library-actions button { padding: 4px 10px; font-size: 11px; }
+
+.pill-ok { background: rgba(74, 222, 128, 0.15); color: var(--live); }
+.pill-warn { background: rgba(250, 204, 21, 0.15); color: #fde047; }
+.pill-bad { background: rgba(248, 113, 113, 0.15); color: var(--down); }
+
+/* Downloads. */
+.downloader { margin-top: 14px; }
+.repo-input {
+  flex: 1; min-width: 260px; background: #12141a; color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px;
+  font: inherit; font-family: ui-monospace, "SF Mono", monospace; font-size: 12px;
+}
+.repo-input:focus { outline: none; border-color: var(--accent); }
+.download-status {
+  margin-top: 12px; padding: 12px 14px;
+  background: #12141a; border: 1px solid var(--line); border-radius: 8px;
+}
+.download-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.download-head code { font-size: 11px; color: var(--muted); }
+.bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.bar-fill { height: 100%; background: var(--accent); transition: width 0.4s ease; }
+
+.notice-ok { border-color: rgba(74, 222, 128, 0.4); color: var(--live); }
+
+/* Generated settings form. */
+.settings-group {
+  border: 1px solid var(--line); border-radius: 8px;
+  margin: 16px 0 0; padding: 14px 16px;
+}
+.settings-group legend {
+  padding: 0 6px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted);
+}
+.settings-group .empty { margin: 0 0 12px; font-size: 11px; }
+.setting { margin-bottom: 16px; }
+.setting:last-child { margin-bottom: 0; }
+.setting-label {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 5px; font-weight: 500;
+}
+.setting-unit { color: var(--muted); font-weight: 400; }
+.setting .repo-input { width: 100%; min-width: 0; }
+.setting-help { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.setting-caution { margin: 4px 0 0; color: #fde047; font-size: 11px; line-height: 1.5; }
+select.repo-input { appearance: none; cursor: pointer; }
+
+/* Request diagnostics. */
+.request-table { margin-top: 12px; font-size: 11px; }
+.request-row {
+  display: grid; gap: 10px; align-items: center; padding: 6px 0;
+  grid-template-columns: 130px 88px repeat(6, minmax(52px, 1fr)) minmax(90px, 1.2fr) minmax(160px, 2fr);
+  border-top: 1px solid var(--line);
+}
+.request-row > span { font-variant-numeric: tabular-nums; }
+.request-head {
+  border-top: none; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.6px; font-size: 10px;
+}
+.request-row code { color: var(--muted); font-size: 10px; }
+.request-row .pill { justify-self: start; font-size: 10px; }
+.request-tools { color: var(--muted); word-break: break-word; }
+
+
+.request-why {
+  color: var(--muted, #9aa1ad);
+  font-size: 0.85em;
+}
+
+
+/* The supported models. Given cards rather than list rows because they are a
+   choice the user makes, not inventory they scan. */
+.catalog { list-style: none; margin: 0 0 18px; padding: 0; display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.catalog-card { border: 1px solid var(--line, #2b2f38); border-radius: 8px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px; }
+.catalog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.catalog-note { margin: 0; color: var(--muted, #9aa1ad); font-size: 0.88em; }
+.empty-cta { display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+  padding: 18px 0; }
+button.primary { border-color: #0e7490; color: #7dd3fc; }
+
+
+/* The advanced download sits below the presets, behind a quiet rule: it is an
+   escape hatch, not a peer of the two supported models. */
+.divider { border: 0; border-top: 1px solid var(--line, #2b2f38); margin: 22px 0 16px; }
+.advanced-heading { margin: 0 0 10px; font-size: 0.95rem; font-weight: 600;
+  color: var(--muted, #9aa1ad); }
+
+
+/* The operational summary: Server / Model / Inference, then Capabilities and
+   Prompt cache. Capped at three columns so a wide window does not spread five
+   cards into a single unreadable row. */
+@media (min-width: 1000px) {
+  .grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 660px) and (max-width: 999px) {
+  .grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+
+/* What is on disk, under the model's name. Quieter than the title: the title is
+   the model, this is the copy of it. */
+.catalog-installed { display: flex; flex-direction: column; gap: 2px; }
+.catalog-installed code { font-size: 0.85em; color: var(--muted, #9aa1ad); }
+.catalog-facts { font-size: 0.8em; color: var(--muted, #9aa1ad); font-variant-numeric: tabular-nums; }
+
+
+/* A default the user has not chosen: shown, but visibly not theirs. */
+.setting-inherited input, .setting-inherited select { color: var(--muted, #9aa1ad); }
+.model-setting { display: flex; flex-direction: column; }
+button.link { align-self: flex-start; background: none; border: 0; padding: 2px 0 8px;
+  color: var(--accent, #7dd3fc); font-size: 0.8em; cursor: pointer; }
+
+
+/* The disclosure sits between the actions and the cards; without the gap they
+   read as one block. */
+section.launch { margin: 6px 0 22px; }
+
+/* Logs fill what is left of the window rather than a fixed card, and scroll
+   inside.
+   Three rules, and all three are load-bearing:
+
+   `height: 100vh` is the anchor, and it has to be a *definite* height rather
+   than a floor. `min-height: 100vh` looks equivalent and is not: the `pre`
+   below has `flex-basis: auto`, so its base size is the whole log, `main` grows
+   past the window to fit it, and the page scrolls while the pane sits at
+   content height. Measured that way in the packaged app — an 868px viewport
+   holding an 1846px document. A definite height gives the flex chain something
+   to distribute, so the pane is sized by the window and scrolls inside itself.
+   Scoped by `:has()` to the one view that wants it, so no other view's box
+   changes; `box-sizing: border-box` (set globally above) keeps `main`'s padding
+   inside the 100vh. The window's own `minHeight` of 580 is what stops the
+   header and notice from ever needing more room than this leaves.
+
+   `min-height: 0` is what lets a flex child actually shrink below its content.
+
+   Nothing here may cap the `pre`'s height. A `max-height` on it — there used to
+   be one, left over from when the log was a card on the dashboard — silently
+   wins over `flex-grow` and returns the pane to a fixed box, which is the exact
+   regression `Logs.layout.test.ts` exists to catch. */
+main:has(> .panel.logs) {
+  display: flex; flex-direction: column; height: 100vh;
+}
+.panel.logs { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.panel.logs pre {
+  flex: 1 1 auto; min-height: 12rem; overflow: auto; margin: 0; color: var(--muted);
+}
+
+
+.storage { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 18px; }

@@ -1,0 +1,140 @@
+name: CI
+
+# Push and pull_request both fire, which would run everything twice for a branch
+# that has a PR open. Excluding pushes to branches keeps the duplicate off: a
+# branch is validated by its PR, and `main` is validated by its push.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  # A new push supersedes the run it interrupted.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned in `src/server/.python-version`; repeated here because actions cannot
+  # read it before checkout. `python-version-file` below is the authority.
+  UV_FROZEN: "1"
+
+jobs:
+  # The only portable part. Everything else needs macOS, so it is the one job
+  # that gets a fast, cheap runner.
+  frontend:
+    name: Frontend (typecheck, tests, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/desktop/package-lock.json
+
+      # `ci`, never `install`: it installs exactly the lockfile and fails if
+      # package.json and the lock disagree, which is the point of having one.
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      # Vite only. It needs no daemon, no model and no Rust toolchain, so it is
+      # deterministic; the Tauri bundle is not built here.
+      - name: Build the web assets
+        run: npm run build
+
+  python:
+    name: Server (lint, tests)
+    # Apple Silicon, and not negotiable: `mlx` is a hard dependency of the
+    # server package and publishes no Linux wheels, so `uv sync` cannot even
+    # resolve on ubuntu. The tests themselves load no weights.
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: src/server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          # Both files decide what gets installed, so both belong in the key.
+          cache-dependency-glob: |
+            src/server/uv.lock
+            src/server/pyproject.toml
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: src/server/.python-version
+
+      # `--frozen` fails rather than silently updating the lock, so CI validates
+      # the dependency set that is committed.
+      - name: Install
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      # No `ruff format --check`: this project does not use Ruff as its
+      # formatter. `[tool.ruff]` configures lint only, and running the formatter
+      # today would rewrite 34 files. Adding the check would either fail CI on
+      # every existing file or force a reformat unrelated to any change. If the
+      # project adopts `ruff format`, add the check in the same commit that
+      # applies it.
+
+      - name: Tests
+        # Everything here is deterministic: no weights are read, no model is
+        # loaded, and MLX is imported but never asked to compute.
+        run: uv run pytest
+
+  rust:
+    name: Desktop (fmt, clippy, tests)
+    # macOS because the crate is a Tauri application linking against system
+    # frameworks, and because `paths.rs` and `bootstrap.rs` describe macOS
+    # locations. Their tests are the ones worth keeping.
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: src/desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/desktop/src-tauri
+
+      # Tauri's build script generates code from the frontend's dist directory,
+      # so the web assets have to exist before anything compiles.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/desktop/package-lock.json
+      - run: npm ci
+        working-directory: src/desktop
+      - run: npm run build
+        working-directory: src/desktop
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test

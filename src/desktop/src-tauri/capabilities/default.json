@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal surface: the interface talks to the daemon through our own commands, never directly.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "uv",
+          "sidecar": true
+        }
+      ]
+    },
+    "dialog:allow-open"
+  ]
+}

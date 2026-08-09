@@ -1,0 +1,39 @@
+[package]
+name = "quantum-codex-desktop"
+version = "1.0.0"
+description = "Quantum Codex — macOS control plane"
+license = "MIT"
+edition = "2021"
+rust-version = "1.82"
+
+[lib]
+name = "quantum_codex_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+tauri-plugin-shell = "2.3"
+# A native folder picker: the one part of importing a model a webview cannot do.
+tauri-plugin-dialog = "2.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "time", "macros", "sync"] }
+# The management plane is loopback HTTP with a bearer token from disk, so the
+# request has to happen in Rust: the token must not have to reach the webview.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# Signalling the daemon by pid: SIGTERM, then SIGKILL if it will not go.
+libc = "0.2"
+# Content fingerprinting of the bundled project, to tell an obsolete managed
+# runtime from a current one deterministically.
+sha2 = "0.10"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+# Build-machine paths are kept out of the shipped binary by `--remap-path-prefix`
+# in the `build-desktop` target, not here: Cargo's own `trim-paths` is still
+# nightly-only as of 1.97.

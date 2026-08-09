@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Project outputs (Tauri writes under both roots)
+build/
+dist/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Logs
+*.log
+
+# Desktop
+/src/desktop/node_modules/
+/src/desktop/dist/
+/src/desktop/src-tauri/gen/
+/src/desktop/src-tauri/target/
+
+# macOS
+.DS_Store
