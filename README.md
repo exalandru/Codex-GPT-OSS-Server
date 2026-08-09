@@ -97,14 +97,11 @@ model = "gpt-oss-20b"
 model_reasoning_effort = "medium"
 model_provider = "qcs"
 
-[model_providers.qcs]
-name = "QCS"
-base_url = "http://127.0.0.1:8123/v1"
-wire_api = "responses"
-
-[model_providers.qcs.auth]
-command = "echo"
-args = ["local"]
+model_providers.qcs.name = "QCS"
+model_providers.qcs.base_url = "http://127.0.0.1:8123/v1"
+model_providers.qcs.wire_api = "responses"
+model_providers.qcs.auth.command = "echo"
+model_providers.qcs.auth.args = ["local"]
 ```
 
 Append that fragment to your own `~/.codex/config.toml` when you want the persistent setup.
