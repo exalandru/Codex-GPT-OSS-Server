@@ -41,11 +41,19 @@ class LaunchModel:
     """
 
     slug: str
+    #: Immutable library identity used by QCS selectors and profiles. Codex is
+    #: always given ``slug`` instead.
+    id: str | None = None
+    display_name: str | None = None
     #: The effective reasoning effort for this model, resolved by the backend
     #: (catalogue default, then the user's per-model override). ``None`` only
     #: for a model this build knows nothing about, where inventing one would be
     #: a guess presented as configuration.
     reasoning_effort: str | None = None
+
+    @property
+    def library_id(self) -> str:
+        return self.id or self.slug
 
 
 @dataclass(frozen=True)
@@ -91,16 +99,32 @@ def resolve(
     to choose between. Otherwise no model, and the caller must ask.
 
     A named model is matched against what is installed so its effort comes from
-    the backend rather than from whoever is rendering. A name that matches
-    nothing is still honoured: the server is the thing that decides what it
-    serves, and refusing here would only move the error somewhere less clear.
+    the backend rather than from whoever is rendering.
+
+    ``default_model`` and ``chosen`` are QCS *selectors* -- a profile stores the
+    stable library id -- while what is rendered is always the served name. A
+    selector that matches nothing while models are known is therefore stale, and
+    rendering it would hand Codex an internal id it can never ask for; the
+    caller is told to choose instead. With nothing to match against it is taken
+    at face value, so the command still works with no server running.
     """
+    # Two lookups rather than one merged mapping: a profile stores the stable
+    # library id, and a served name that happens to equal *another* model's id
+    # must not shadow it. Merging them made the answer depend on iteration
+    # order, which is how a rename of one model would silently redirect a
+    # profile pointing at another.
+    by_id = {model.library_id: model for model in available}
     by_slug = {model.slug: model for model in available}
     name = chosen or default_model
     if name is None and len(available) == 1:
-        name = available[0].slug
+        name = available[0].library_id
 
-    model = by_slug.get(name) or (LaunchModel(slug=name) if name else None)
+    model = (by_id.get(name) or by_slug.get(name)) if name else None
+    if model is None and name and not available:
+        # Nothing to match against -- no server running, or a library that could
+        # not be read. The name is honoured as a served name, which is what it
+        # is: refusing here would only move the error somewhere less clear.
+        model = LaunchModel(slug=name)
     return LaunchSettings(
         base_url=f"http://{host}:{port}/v1",
         model=model,

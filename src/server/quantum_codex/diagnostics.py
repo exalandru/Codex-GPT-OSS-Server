@@ -95,6 +95,17 @@ class RequestRecord:
     #: answer that ended on `final` is a completed thought; one that ended on
     #: `commentary` was mid tool call.
     last_channel: str | None = None
+    #: Content-free semantic shape and terminal mechanism. These distinguish a
+    #: real final answer, a tool handoff and a reasoning-only terminal turn.
+    terminal_token_class: str | None = None
+    had_reasoning: bool = False
+    had_tool_call: bool = False
+    had_final_output: bool = False
+    empty_completion_detected: bool = False
+    #: Reserved diagnostics for an explicitly designed recovery mechanism. QCS
+    #: currently fails closed instead of silently continuing a model turn.
+    recovery_attempted: bool = False
+    recovery_outcome: str | None = None
 
     input_tokens: int = 0
     cached_tokens: int = 0
@@ -187,6 +198,13 @@ class RequestRecord:
             "outcome": self.outcome.value if self.outcome else None,
             "finish_reason": self.finish_reason,
             "last_channel": self.last_channel,
+            "terminal_token_class": self.terminal_token_class,
+            "had_reasoning": self.had_reasoning,
+            "had_tool_call": self.had_tool_call,
+            "had_final_output": self.had_final_output,
+            "empty_completion_detected": self.empty_completion_detected,
+            "recovery_attempted": self.recovery_attempted,
+            "recovery_outcome": self.recovery_outcome,
             "termination": self.termination,
             "error": self.error,
             "input_tokens": self.input_tokens,

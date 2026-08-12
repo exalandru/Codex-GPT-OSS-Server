@@ -174,6 +174,31 @@ def test_an_entry_on_an_absent_volume_survives_a_round_trip() -> None:
 
     assert len(reports) == 1
     assert reports[0].state is ModelState.MISSING_VOLUME
+    assert reports[0].entry.id == "gpt-oss-120b"
+
+
+def test_version_one_registry_migrates_to_stable_distinct_ids() -> None:
+    from quantum_codex.config import write_json
+    from quantum_codex.library.registry import models_path
+
+    write_json(
+        models_path(),
+        {
+            "version": 1,
+            "roots": [],
+            "models": [
+                {"path": "/first/shared-model", "source": "imported"},
+                {"path": "/second/shared-model", "source": "imported"},
+            ],
+        },
+    )
+
+    first = [report.entry for report in load_registry().report()]
+    second = [report.entry for report in load_registry().report()]
+
+    assert first[0].id == "shared-model"
+    assert first[1].id.startswith("shared-model-")
+    assert [entry.id for entry in second] == [entry.id for entry in first]
 
 
 def test_forgetting_a_model_leaves_its_files_alone(model_dir) -> None:

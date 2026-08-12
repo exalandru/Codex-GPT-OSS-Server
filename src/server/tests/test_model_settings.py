@@ -35,6 +35,7 @@ def home(tmp_path, monkeypatch):
 class FakeEntry:
     name: str
     path: str
+    id: str = ""
 
 
 @dataclass
@@ -45,8 +46,10 @@ class FakeReport:
     quantization: str = "mxfp4-4bit"
 
 
-def report(name: str, path: str | None = None) -> FakeReport:
-    return FakeReport(entry=FakeEntry(name=name, path=path or f"/models/{name}"))
+def report(name: str, path: str | None = None, model_id: str = "") -> FakeReport:
+    return FakeReport(
+        entry=FakeEntry(name=name, path=path or f"/models/{name}", id=model_id)
+    )
 
 
 BOTH = [report("gpt-oss-20b-mxfp4-bf16"), report("gpt-oss-120b-mxfp4-bf16")]
@@ -157,10 +160,40 @@ def test_each_model_resolves_its_own_values() -> None:
 
     resolved = {m.slug: m for m in served_models_from_library(BOTH, overrides=settings.overrides)}
 
-    assert resolved["gpt-oss-20b"].default_reasoning_effort.value == "low"
-    assert resolved["gpt-oss-20b"].display_name == "fast-oss"
-    assert resolved["gpt-oss-120b"].default_reasoning_effort.value == "high"
-    assert resolved["gpt-oss-120b"].display_name == "deep-oss"
+    assert resolved["fast-oss"].default_reasoning_effort.value == "low"
+    assert resolved["fast-oss"].display_name == "GPT-OSS 20B"
+    assert resolved["deep-oss"].default_reasoning_effort.value == "high"
+    assert resolved["deep-oss"].display_name == "GPT-OSS 120B"
+
+
+def test_display_and_served_names_change_without_changing_identity() -> None:
+    custom = report("my-own-gpt-oss", model_id="library-7f3a")
+    settings = ModelSettings()
+    settings.set(
+        "library-7f3a",
+        {"display_name": "My Local Model", "served_model_name": "codex-local"},
+    )
+
+    model = served_models_from_library([custom], overrides=settings.overrides)[0]
+
+    assert model.id == "library-7f3a"
+    assert model.display_name == "My Local Model"
+    assert model.slug == "codex-local"
+    assert model.path == "/models/my-own-gpt-oss"
+
+
+def test_served_names_are_trimmed_before_routing_and_collision_checks() -> None:
+    first = report("one", model_id="one-id")
+    second = report("two", model_id="two-id")
+    settings = ModelSettings(
+        overrides={
+            "one-id": {"served_model_name": " shared "},
+            "two-id": {"served_model_name": "shared"},
+        }
+    )
+
+    with pytest.raises(ConfigError, match="served name 'shared'.*two-id"):
+        served_models_from_library([first, second], overrides=settings.overrides)
 
 
 def test_a_model_with_no_override_uses_the_server_default() -> None:
@@ -326,11 +359,11 @@ def test_an_unknown_setting_in_a_profile_is_still_refused(home) -> None:
 
 
 def test_a_clean_store_resolves_the_presets_canonical_names() -> None:
-    """The public id, not the directory the weights happen to occupy."""
+    """The served id and UI label are both independent of the directory."""
     resolved = {m.slug: m for m in served_models_from_library(BOTH)}
 
-    assert resolved["gpt-oss-20b"].display_name == "gpt-oss-20b"
-    assert resolved["gpt-oss-120b"].display_name == "gpt-oss-120b"
+    assert resolved["gpt-oss-20b"].display_name == "GPT-OSS 20B"
+    assert resolved["gpt-oss-120b"].display_name == "GPT-OSS 120B"
 
 
 def test_a_quantisation_suffix_never_reaches_the_public_name() -> None:
@@ -347,7 +380,7 @@ def test_a_preset_installed_under_an_unusual_directory_keeps_its_name() -> None:
 
     resolved = served_models_from_library(odd)
 
-    assert resolved[0].display_name == "gpt-oss-20b"
+    assert resolved[0].display_name == "GPT-OSS 20B"
 
 
 def test_a_custom_model_still_falls_back_to_its_directory_name() -> None:
@@ -362,7 +395,7 @@ def test_the_full_resolved_configuration_of_the_20b_from_a_clean_store() -> None
 
     model = {m.slug: m for m in served_models_from_library(BOTH)}["gpt-oss-20b"]
 
-    assert model.display_name == "gpt-oss-20b"
+    assert model.display_name == "GPT-OSS 20B"
     assert model.default_reasoning_effort is ReasoningEffort.MEDIUM
     assert model.context_window == 131072
     # Declared as inherited: no catalogue opinion, so the server default applies.
@@ -376,7 +409,7 @@ def test_the_full_resolved_configuration_of_the_120b_from_a_clean_store() -> Non
 
     model = {m.slug: m for m in served_models_from_library(BOTH)}["gpt-oss-120b"]
 
-    assert model.display_name == "gpt-oss-120b"
+    assert model.display_name == "GPT-OSS 120B"
     assert model.default_reasoning_effort is ReasoningEffort.MEDIUM
     assert model.context_window == 131072
     assert model.max_output_tokens is None
@@ -399,5 +432,14 @@ def test_a_user_override_still_beats_the_catalogue_default() -> None:
 
     resolved = {m.slug: m for m in served_models_from_library(BOTH, overrides=settings.overrides)}
 
-    assert resolved["gpt-oss-20b"].display_name == "mine"
-    assert resolved["gpt-oss-120b"].display_name == "gpt-oss-120b"
+    assert resolved["mine"].display_name == "GPT-OSS 20B"
+    assert resolved["gpt-oss-120b"].display_name == "GPT-OSS 120B"
+
+
+def test_a_display_override_beats_the_catalogue_name() -> None:
+    settings = ModelSettings()
+    settings.set("gpt-oss-20b", {"display_name": "Fast local 20B"})
+
+    resolved = {m.id: m for m in served_models_from_library(BOTH, overrides=settings.overrides)}
+
+    assert resolved["gpt-oss-20b"].display_name == "Fast local 20B"

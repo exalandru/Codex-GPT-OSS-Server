@@ -20,7 +20,8 @@ they configured something.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,6 +35,7 @@ from .config import (
     MAX_IDLE_TIMEOUT_MINUTES,
 )
 from .inference.prompt_cache import DEFAULT_MAX_BYTES, DEFAULT_MAX_ENTRIES
+from .models import SERVED_NAME, SERVED_NAME_HELP
 
 SCHEMA_VERSION = 1
 
@@ -61,6 +63,11 @@ class Field:
     required: bool = False
     #: ``None`` means "inherit", which is not the same as a value.
     nullable: bool = False
+    #: A regular expression a string value must match, with the message to show
+    #: when it does not. Declared beside the field rather than checked by each
+    #: caller: a name that leaves this module has already been through it.
+    pattern: str | None = None
+    pattern_message: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -185,15 +192,24 @@ FIELDS: list[Field] = [
 #: `quantum_codex.model_settings`.
 MODEL_FIELDS: list[Field] = [
     Field(
+        name="display_name",
+        label="Display name",
+        kind="string",
+        group="basic",
+        help="The name shown in QCS. It does not change model identity or what Codex requests.",
+        nullable=True,
+    ),
+    Field(
         name="served_model_name",
         label="Served as",
         kind="string",
         group="basic",
         help=(
-            "The id clients see. Defaults to the directory name, so a client is "
-            "never handed a filesystem path."
+            "The model name exposed to Codex. It is separate from the immutable library id."
         ),
         nullable=True,
+        pattern=SERVED_NAME.pattern,
+        pattern_message=f"Served as must be {SERVED_NAME_HELP}",
         restart_required=True,
     ),
     Field(
@@ -287,12 +303,21 @@ GROUPS: list[dict[str, str]] = [
 NO_DEFAULT_MODEL = ""
 
 
-def schema(installed: Sequence[str] | None = None) -> dict[str, Any]:
+def schema(
+    installed: Sequence[str] | None = None,
+    *,
+    labels: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """The description a form is generated from.
 
-    ``installed`` is the set of model slugs the library currently holds. It is
-    passed in rather than read here so this module stays a leaf: it describes
-    settings, and the library decides what exists.
+    ``installed`` is the set of stable library ids the library currently holds.
+    It is passed in rather than read here so this module stays a leaf: it
+    describes settings, and the library decides what exists.
+
+    ``labels`` names those ids for a human. The *value* stays the id -- that is
+    what the profile stores and what must survive a rename -- while the label is
+    free to change with the model's display and served names. A form showing the
+    raw id would be showing an internal identifier to someone who chose a name.
     """
     fields = []
     for field in FIELDS:
@@ -301,7 +326,14 @@ def schema(installed: Sequence[str] | None = None) -> dict[str, Any]:
             # Rebuilt on every call: a model imported a moment ago must appear
             # in the form without restarting anything.
             described["choices"] = [NO_DEFAULT_MODEL, *(installed or ())]
-            described["choice_labels"] = {NO_DEFAULT_MODEL: "None — load on demand"}
+            described["choice_labels"] = {
+                NO_DEFAULT_MODEL: "None — load on demand",
+                **{
+                    model_id: label
+                    for model_id, label in (labels or {}).items()
+                    if model_id in (installed or ())
+                },
+            }
         fields.append(described)
     return {"version": SCHEMA_VERSION, "groups": GROUPS, "fields": fields}
 
@@ -379,6 +411,16 @@ def validate_in(fields: Sequence[Field], values: dict[str, Any]) -> list[Validat
                 ValidationProblem(
                     definition.name,
                     f"{definition.label} must be one of: {', '.join(definition.choices)}",
+                )
+            )
+            continue
+
+        if definition.pattern is not None and not re.match(definition.pattern, str(value)):
+            problems.append(
+                ValidationProblem(
+                    definition.name,
+                    definition.pattern_message
+                    or f"{definition.label} has an unusable value",
                 )
             )
             continue

@@ -27,6 +27,7 @@ routinely give the wrong advice.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from dataclasses import asdict, dataclass, field
@@ -40,7 +41,7 @@ from .volumes import VolumeInfo, volume_for
 
 logger = logging.getLogger(__name__)
 
-MODELS_VERSION = 1
+MODELS_VERSION = 2
 
 #: Marker huggingface_hub leaves while a download is in flight.
 INCOMPLETE_SUFFIXES = (".incomplete", ".part", ".tmp")
@@ -77,11 +78,14 @@ def default_root() -> Path:
 class ModelEntry:
     """A model the user has told us about.
 
-    Identified by its absolute path: that is what survives an unmount, a rename
-    of the served name, and a restart.
+    ``id`` is the immutable library identity. The path locates the weights; the
+    display and served names are mutable metadata owned elsewhere. Keeping those
+    concepts separate is what lets either user-facing name change without
+    orphaning this record or its settings.
     """
 
     path: str
+    id: str = ""
     #: How it got here, which decides whether deleting it is recoverable.
     source: str = "imported"  # "imported" | "downloaded"
     #: Hugging Face repository, when it was downloaded from one.
@@ -92,6 +96,31 @@ class ModelEntry:
     @property
     def name(self) -> str:
         return Path(self.path).name
+
+
+def _base_model_id(path: str | Path) -> str:
+    """A readable deterministic id for a newly registered library entry."""
+    from ..models import slug_for
+
+    base = slug_for(Path(path).name)
+    if base:
+        return base
+    digest = hashlib.sha256(str(Path(path).expanduser()).encode()).hexdigest()[:12]
+    return f"model-{digest}"
+
+
+def _allocate_model_id(path: str | Path, claimed: set[str]) -> str:
+    """Allocate one stable id, disambiguating equal directory names by path."""
+    base = _base_model_id(path)
+    if base not in claimed:
+        return base
+    digest = hashlib.sha256(str(Path(path).expanduser()).encode()).hexdigest()[:8]
+    candidate = f"{base}-{digest}"
+    suffix = 2
+    while candidate in claimed:
+        candidate = f"{base}-{digest}-{suffix}"
+        suffix += 1
+    return candidate
 
 
 @dataclass(frozen=True)
@@ -217,6 +246,11 @@ class ModelRegistry:
     """The persisted library, plus discovery over configured roots."""
 
     def __init__(self, entries: list[ModelEntry] | None = None, roots: list[str] | None = None):
+        claimed: set[str] = set()
+        for entry in entries or []:
+            if not entry.id or entry.id in claimed:
+                entry.id = _allocate_model_id(entry.path, claimed)
+            claimed.add(entry.id)
         self._entries: dict[str, ModelEntry] = {
             str(Path(e.path).expanduser()): e for e in (entries or [])
         }
@@ -261,7 +295,13 @@ class ModelRegistry:
             reason = report.reasons[0] if report.reasons else "not a usable GPT-OSS model"
             raise ConfigError(f"{resolved} cannot be used: {reason}")
 
-        entry = ModelEntry(path=str(resolved), source=source, repo=repo)
+        claimed = {entry.id for entry in self._entries.values()}
+        entry = ModelEntry(
+            path=str(resolved),
+            id=_allocate_model_id(resolved, claimed),
+            source=source,
+            repo=repo,
+        )
         self._entries[str(resolved)] = entry
         return entry
 
@@ -305,7 +345,12 @@ class ModelRegistry:
                     continue
                 if inspect_model(candidate).verdict is Verdict.UNSUPPORTED:
                     continue
-                entry = ModelEntry(path=str(candidate), source="discovered")
+                claimed = {entry.id for entry in self._entries.values()}
+                entry = ModelEntry(
+                    path=str(candidate),
+                    id=_allocate_model_id(candidate, claimed),
+                    source="discovered",
+                )
                 self._entries[str(candidate)] = entry
                 found.append(entry)
         return found
@@ -318,10 +363,58 @@ class ModelRegistry:
 # -- persistence -------------------------------------------------------------
 
 
+def _migrate_registry(data: dict[str, Any], version: int, expected: int) -> dict[str, Any]:
+    """Version 1 had no immutable entry id; derive the ids it already implied."""
+    if version != 1 or expected != 2:
+        raise ConfigError(
+            f"{models_path()} has unsupported schema version {version!r}; expected {expected}"
+        )
+    claimed: set[str] = set()
+    migrated = dict(data)
+    models: list[Any] = []
+    for raw in data.get("models") or []:
+        if not isinstance(raw, dict):
+            models.append(raw)
+            continue
+        entry = dict(raw)
+        path = entry.get("path")
+        if isinstance(path, str):
+            entry["id"] = _allocate_model_id(path, claimed)
+            claimed.add(entry["id"])
+        models.append(entry)
+    migrated["models"] = models
+    migrated["version"] = expected
+    return migrated
+
+
 def load_registry() -> ModelRegistry:
-    data = read_json(models_path(), expected_version=MODELS_VERSION)
+    """Read the library, writing back any identity that had to be allocated.
+
+    An id that is only ever derived is not a stored fact: it is a function of
+    this file's contents and order, recomputed by every reader. That happens to
+    agree with itself today because every QCS write persists the ids it derived
+    first -- but it leaves the document at the older schema version indefinitely,
+    keeps the derivation on the read path, and makes identity depend on a
+    property of the file rather than on a value in it. The first read after an
+    upgrade is therefore also a write.
+    """
+    # The migrator returns a current-schema document, so the result cannot be
+    # told apart from a file that was already current. Recorded here rather than
+    # inferred, because "did this need writing back" is the whole question.
+    upgraded = False
+
+    def migrator(data: dict[str, Any], version: int, expected: int) -> dict[str, Any]:
+        nonlocal upgraded
+        upgraded = True
+        return _migrate_registry(data, version, expected)
+
+    data = read_json(models_path(), expected_version=MODELS_VERSION, migrator=migrator)
     if data is None:
         return ModelRegistry()
+
+    persisted = [
+        raw.get("id") if isinstance(raw, dict) else None for raw in (data.get("models") or [])
+    ]
 
     entries: list[ModelEntry] = []
     known = set(ModelEntry.__dataclass_fields__)
@@ -336,7 +429,17 @@ def load_registry() -> ModelRegistry:
         entries.append(ModelEntry(**raw))
 
     roots = data.get("roots")
-    return ModelRegistry(entries=entries, roots=roots if isinstance(roots, list) else None)
+    registry = ModelRegistry(entries=entries, roots=roots if isinstance(roots, list) else None)
+
+    if upgraded or persisted != [entry.id for entry in registry._entries.values()]:
+        try:
+            save_registry(registry)
+        except OSError as exc:
+            # The ids are correct for this process either way. Refusing to read
+            # a readable library because it could not be written would be the
+            # worse failure; the next successful write settles it.
+            logger.warning("Could not persist migrated model ids: %s", exc)
+    return registry
 
 
 def save_registry(registry: ModelRegistry) -> None:

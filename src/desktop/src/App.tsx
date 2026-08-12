@@ -177,16 +177,16 @@ export default function App() {
    * lose it. An empty choice clears both, so there is never a copyable command
    * with a missing or placeholder model in it.
    */
-  const selectLaunchModel = async (slug: string) => {
-    setLaunchModel(slug);
-    if (!slug) {
+  const selectLaunchModel = async (modelId: string) => {
+    setLaunchModel(modelId);
+    if (!modelId) {
       setLaunchCommand(null);
       setLaunchConfig(null);
       return;
     }
     try {
-      setLaunchCommand(await api.codexLaunchCommand(slug));
-      setLaunchConfig(await api.codexLaunchConfig(slug));
+      setLaunchCommand(await api.codexLaunchCommand(modelId));
+      setLaunchConfig(await api.codexLaunchConfig(modelId));
     } catch (cause) {
       setLaunchCommand(null);
       setLaunchConfig(null);
@@ -451,10 +451,10 @@ export default function App() {
             >
               <option value="">Select a model…</option>
               {(launchModels?.models ?? []).map((model) => (
-                <option key={model.slug} value={model.slug}>
+                <option key={model.id ?? model.slug} value={model.id ?? model.slug}>
                   {model.reasoning_effort
-                    ? `${model.slug} — reasoning ${model.reasoning_effort}`
-                    : model.slug}
+                    ? `${model.display_name ?? model.slug} — served as ${model.slug} — reasoning ${model.reasoning_effort}`
+                    : `${model.display_name ?? model.slug} — served as ${model.slug}`}
                 </option>
               ))}
             </select>

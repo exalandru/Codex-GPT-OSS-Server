@@ -12,10 +12,16 @@ from dataclasses import dataclass
 
 import pytest
 
+from quantum_codex.config import ConfigError
 from quantum_codex.inference.engine import EngineState
 from quantum_codex.library.registry import ModelState
 from quantum_codex.lifecycle import LifecycleState, ModelBusyError, ModelSupervisor
-from quantum_codex.models import ServedModel, served_models_from_library, slug_for
+from quantum_codex.models import (
+    ServedModel,
+    resolve_served_catalogue,
+    served_models_from_library,
+    slug_for,
+)
 
 # -- the catalogue -----------------------------------------------------------
 
@@ -24,6 +30,7 @@ from quantum_codex.models import ServedModel, served_models_from_library, slug_f
 class FakeEntry:
     name: str
     path: str
+    id: str = ""
 
 
 @dataclass
@@ -34,8 +41,19 @@ class FakeReport:
     quantization: str | None = "mxfp4-4bit"
 
 
-def report(name: str, state: ModelState = ModelState.READY, **kwargs) -> FakeReport:
-    return FakeReport(entry=FakeEntry(name=name, path=f"/models/{name}"), state=state, **kwargs)
+def report(
+    name: str,
+    state: ModelState = ModelState.READY,
+    *,
+    model_id: str = "",
+    path: str | None = None,
+    **kwargs,
+) -> FakeReport:
+    return FakeReport(
+        entry=FakeEntry(name=name, path=path or f"/models/{name}", id=model_id),
+        state=state,
+        **kwargs,
+    )
 
 
 @pytest.mark.parametrize(
@@ -77,14 +95,69 @@ def test_a_model_that_could_not_load_is_not_advertised(state: ModelState) -> Non
     assert models == ()
 
 
-def test_colliding_slugs_keep_one_model_rather_than_shadowing() -> None:
-    """Two models answering to one name makes the served weights unknowable."""
-    models = served_models_from_library(
+def test_a_contested_served_name_is_served_by_neither_model() -> None:
+    """Two models answering to one name makes the served weights unknowable.
+
+    This replaces a witness for the previous contract, which kept the first
+    entry and logged the loser. Keeping one is a choice the server has no basis
+    to make: nothing distinguishes the two, and the request that arrives asks
+    for a name, not for weights.
+    """
+    catalogue = resolve_served_catalogue(
         [report("gpt-oss-20b-mxfp4-bf16"), report("gpt-oss-20b-mxfp4")]
     )
 
-    assert len(models) == 1
-    assert models[0].path == "/models/gpt-oss-20b-mxfp4-bf16"
+    assert catalogue.models == ()
+    assert [problem.reason for problem in catalogue.problems] == ["duplicate"]
+    assert catalogue.problems[0].served_name == "gpt-oss-20b"
+
+
+def test_a_contested_name_does_not_take_the_rest_of_the_catalogue_with_it() -> None:
+    """Containment: one ambiguous pair must not stop the daemon serving.
+
+    The strict reading raises, and that reading belongs to the boundary that
+    stores a configuration. A running server keeps every model whose name is
+    unambiguous, so a library that has become ambiguous is still a library a
+    user can work with -- and fix.
+    """
+    reports = [
+        report("gpt-oss-20b-mxfp4-bf16"),
+        report("gpt-oss-20b-mxfp4"),
+        report("gpt-oss-120b-mxfp4-bf16"),
+    ]
+
+    catalogue = resolve_served_catalogue(reports)
+
+    assert [m.slug for m in catalogue.models] == ["gpt-oss-120b"]
+    with pytest.raises(ConfigError, match="gpt-oss-20b"):
+        served_models_from_library(reports)
+
+
+def test_a_served_name_that_no_client_could_use_is_refused() -> None:
+    """The name reaches a generated `config.toml` verbatim; a quote breaks it."""
+    catalogue = resolve_served_catalogue(
+        [report("custom-model", model_id="custom-model")],
+        overrides={"custom-model": {"served_model_name": 'evil"\nmodel = "other'}},
+    )
+
+    assert catalogue.models == ()
+    assert catalogue.problems[0].reason == "invalid"
+
+
+def test_settings_do_not_leak_between_two_identically_named_directories() -> None:
+    """A disambiguated id is a *different* model, not the same one renamed."""
+    first = report("shared-model", model_id="shared-model", path="/first/shared-model")
+    second = report("shared-model", model_id="shared-model-ab12cd34", path="/second/shared-model")
+
+    catalogue = resolve_served_catalogue(
+        [first, second], overrides={"shared-model": {"served_model_name": "alpha"}}
+    )
+
+    assert {m.id: m.slug for m in catalogue.models} == {
+        "shared-model": "alpha",
+        "shared-model-ab12cd34": "shared-model",
+    }
+    assert catalogue.problems == ()
 
 
 def test_the_catalogue_carries_the_path_needed_to_load() -> None:

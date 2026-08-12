@@ -80,6 +80,7 @@ SUPPORTED: tuple[CatalogEntry, ...] = (
         download_bytes=13 * 1024**3,
         note="Fast to load. Best for ordinary coding turns.",
         defaults={
+            "display_name": "GPT-OSS 20B",
             # The public id, not the directory. `gpt-oss-20b-mxfp4-bf16` is where
             # the weights happen to sit; what a client asks for is the model.
             "served_model_name": "gpt-oss-20b",
@@ -95,6 +96,7 @@ SUPPORTED: tuple[CatalogEntry, ...] = (
         download_bytes=61 * 1024**3,
         note="Needed for namespaced tools: MCP, multi-agent and Codex apps.",
         defaults={
+            "display_name": "GPT-OSS 120B",
             "served_model_name": "gpt-oss-120b",
             "reasoning_effort": "medium",
             "context_length": 131072,
@@ -116,7 +118,17 @@ def defaults_for(slug: str) -> dict[str, Any]:
     return {}
 
 
-def merge(reports: list[Any]) -> list[dict[str, Any]]:
+def display_name_for(slug: str) -> str | None:
+    """The catalogue's human-facing name, when this is a preset."""
+    for entry in SUPPORTED:
+        if entry.slug == slug:
+            return entry.display_name
+    return None
+
+
+def merge(
+    reports: list[Any], *, overrides: dict[str, dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """The catalogue joined with what is installed.
 
     Every supported model appears exactly once, carrying its library report if
@@ -131,29 +143,44 @@ def merge(reports: list[Any]) -> list[dict[str, Any]]:
     # Imported here rather than at module scope: `models` asks this module for
     # the presets' defaults, so a top-level import in both directions would be a
     # cycle. Only `merge` needs identity, and only at call time.
-    from ..models import slug_for
+    from ..models import resolved_model_names, slug_for
 
-    by_slug: dict[str, Any] = {}
-    for report in reports:
-        by_slug.setdefault(slug_for(report.entry.name), report)
+    remaining = list(reports)
 
     merged: list[dict[str, Any]] = []
     for entry in SUPPORTED:
-        report = by_slug.pop(entry.slug, None)
+        report = next(
+            (item for item in remaining if slug_for(item.entry.name) == entry.slug),
+            None,
+        )
+        if report is not None:
+            remaining.remove(report)
+        names = (
+            resolved_model_names(report, overrides=overrides)
+            if report is not None
+            else None
+        )
         merged.append(
             {
                 **entry.as_dict(),
+                "id": names.library_id if names is not None else entry.slug,
+                "served_name": names.served_name if names is not None else entry.slug,
+                "display_name": names.display_name if names is not None else entry.display_name,
                 "supported": True,
                 "installed": report is not None,
                 "model": report.as_dict() if report is not None else None,
             }
         )
 
-    for slug, report in by_slug.items():
+    for report in remaining:
+        slug = slug_for(report.entry.name)
+        names = resolved_model_names(report, overrides=overrides)
         merged.append(
             {
                 "slug": slug,
-                "display_name": report.entry.name,
+                "id": names.library_id,
+                "display_name": names.display_name,
+                "served_name": names.served_name,
                 "repo": None,
                 "parameters": None,
                 "download_bytes": 0,
@@ -163,4 +190,22 @@ def merge(reports: list[Any]) -> list[dict[str, Any]]:
                 "model": report.as_dict(),
             }
         )
+
+    # A name two installed models both answer to is served by neither. Saying so
+    # here is what keeps that from being visible only as a log line on a server
+    # the user has no reason to be reading: the card shows the same fact the
+    # daemon acted on.
+    def contends(item: dict[str, Any]) -> bool:
+        # Only what would actually be served can contend for a name: an entry on
+        # an unplugged volume is not advertised, so it takes no name from
+        # anything.
+        return bool(item["model"] and item["model"].get("usable"))
+
+    claimed: dict[str, int] = {}
+    for item in merged:
+        if contends(item):
+            claimed[item["served_name"]] = claimed.get(item["served_name"], 0) + 1
+    for item in merged:
+        item["served_conflict"] = contends(item) and claimed[item["served_name"]] > 1
+
     return merged

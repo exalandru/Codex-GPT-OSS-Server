@@ -49,6 +49,8 @@ function respond(catalog: unknown[], library: unknown[] = []) {
     if (command === "model_catalog") return { models: catalog };
     if (command === "list_models") return { models: library, roots: [] };
     if (command === "download_status") return { state: "idle" };
+    if (command === "model_config_schema") return { version: 1, groups: [], fields: [] };
+    if (command === "model_config") return { settings: {}, effective: {}, inherited: [] };
     return { message: "ok" };
   });
 }
@@ -120,7 +122,35 @@ describe("catalog and library reconciliation", () => {
     render(<Models />);
 
     const list = await screen.findByRole("list", { name: /other installed models/i });
-    expect(within(list).getByText("some-other-model")).toBeTruthy();
+    expect(within(list).getByText("some-other-model", { selector: "strong" })).toBeTruthy();
+  });
+
+  it("configures an imported model by stable id and shows its served name", async () => {
+    const other = installed("some-other-model");
+    respond(
+      [
+        {
+          id: "library-7f3a",
+          slug: "some-other-model",
+          display_name: "My Local Model",
+          served_name: "codex-local",
+          supported: false,
+          installed: true,
+          model: other,
+        },
+      ],
+      [other],
+    );
+    render(<Models />);
+
+    const list = await screen.findByRole("list", { name: /other installed models/i });
+    expect(within(list).getByText("My Local Model")).toBeTruthy();
+    expect(within(list).getByText("codex-local")).toBeTruthy();
+    await userEvent.click(within(list).getByRole("button", { name: "Configure…" }));
+
+    await waitFor(() =>
+      expect(mocked).toHaveBeenCalledWith("model_config", { slug: "library-7f3a" }),
+    );
   });
 
   it("keeps MISSING_VOLUME visible on the card rather than hiding the model", async () => {
@@ -132,6 +162,38 @@ describe("catalog and library reconciliation", () => {
     render(<Models />);
 
     expect(await screen.findByText(/MISSING_VOLUME/)).toBeTruthy();
+  });
+
+  it("says so when two installed models claim one served name", async () => {
+    // Neither is served, and the only other place that fact appears is a line
+    // in the server log.
+    const other = installed("some-other-model");
+    respond(
+      [
+        {
+          ...preset("gpt-oss-20b", "GPT-OSS 20B", installed("gpt-oss-20b-mxfp4-bf16")),
+          id: "gpt-oss-20b",
+          served_name: "gpt-oss-20b",
+          served_conflict: true,
+        },
+        {
+          id: "some-other-model",
+          slug: "some-other-model",
+          display_name: "Some other model",
+          served_name: "gpt-oss-20b",
+          served_conflict: true,
+          supported: false,
+          installed: true,
+          model: other,
+        },
+      ],
+      [other],
+    );
+    render(<Models />);
+
+    const warnings = await screen.findAllByRole("alert");
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0].textContent).toContain("also served as");
   });
 });
 

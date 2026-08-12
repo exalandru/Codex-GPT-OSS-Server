@@ -113,10 +113,7 @@ export function Models() {
   // keeps a matched model from appearing both as a card and as a row. Matching
   // by display name or path here would be a second, disagreeing opinion.
   const presets = catalog.filter((entry) => entry.supported);
-  const models = catalog
-    .filter((entry) => !entry.supported)
-    .map((entry) => entry.model as Record<string, unknown>)
-    .filter(Boolean);
+  const models = catalog.filter((entry) => !entry.supported && entry.model);
   const roots = (api.pick(library, "roots") as string[] | undefined) ?? [];
 
   /** Run an action with a visible busy state and a visible outcome. */
@@ -217,6 +214,13 @@ export function Models() {
               ) : (
                 <p className="catalog-note">{String(entry.note ?? "")}</p>
               )}
+              {entry.served_conflict === true && (
+                <p className="notice notice-error" role="alert">
+                  Another installed model is also served as{" "}
+                  <code>{String(entry.served_name ?? entry.slug)}</code>. Neither is offered
+                  to Codex until one of them is configured with a different name.
+                </p>
+              )}
               <div className="actions">
                 {entry.installed ? (
                   <>
@@ -224,7 +228,7 @@ export function Models() {
                       disabled={busy !== null}
                       onClick={() =>
                         setConfiguring({
-                          slug: String(entry.slug),
+                          slug: String(entry.id ?? entry.slug),
                           name: String(entry.display_name),
                         })
                       }
@@ -320,11 +324,20 @@ export function Models() {
         )
       ) : (
         <ul className="library" aria-label="Other installed models">
-          {models.map((model) => (
+          {models.map((entry) => {
+            const model = entry.model as Record<string, unknown>;
+            return (
             <ModelRow
-              key={String(model.path)}
+              key={String(entry.id ?? model.path)}
+              entry={entry}
               model={model}
               busy={busy !== null}
+              onConfigure={() =>
+                setConfiguring({
+                  slug: String(entry.id ?? entry.slug),
+                  name: String(entry.display_name ?? model.name),
+                })
+              }
               onForget={() =>
                 void act("forget", async () => {
                   await api.forgetModel(String(model.path));
@@ -333,7 +346,8 @@ export function Models() {
               }
               onReveal={() => void api.revealInFinder(String(model.path))}
             />
-          ))}
+            );
+          })}
         </ul>
       )}
 
@@ -411,13 +425,17 @@ export function Models() {
 }
 
 function ModelRow({
+  entry,
   model,
   busy,
+  onConfigure,
   onForget,
   onReveal,
 }: {
+  entry: Record<string, unknown>;
   model: Record<string, unknown>;
   busy: boolean;
+  onConfigure: () => void;
   onForget: () => void;
   onReveal: () => void;
 }) {
@@ -429,7 +447,7 @@ function ModelRow({
   return (
     <li className="library-row">
       <div className="library-head">
-        <strong>{String(model.name)}</strong>
+        <strong>{String(entry.display_name ?? model.name)}</strong>
         <span className={`pill pill-${presentation.tone}`}>{presentation.label}</span>
         {model.usable === true && (
           <span className="library-spec">
@@ -439,6 +457,22 @@ function ModelRow({
           </span>
         )}
       </div>
+
+      <p className="library-detail">
+        Served as <code>{String(entry.served_name ?? entry.slug)}</code>
+      </p>
+
+      {/* Two models answering to one name are served by neither: the server
+          cannot know which weights a request meant. Said here because the
+          alternative is a model that looks installed and is quietly absent
+          from `/v1/models`. */}
+      {entry.served_conflict === true && (
+        <p className="notice notice-error" role="alert">
+          Another installed model is also served as{" "}
+          <code>{String(entry.served_name ?? entry.slug)}</code>. Neither is offered to Codex
+          until one of them is configured with a different name.
+        </p>
+      )}
 
       <code className="library-path">{String(model.path)}</code>
 
@@ -456,6 +490,9 @@ function ModelRow({
       )}
 
       <div className="library-actions">
+        <button disabled={busy} onClick={onConfigure}>
+          Configure…
+        </button>
         <button disabled={busy || !reachable} onClick={onReveal}>
           Reveal in Finder
         </button>

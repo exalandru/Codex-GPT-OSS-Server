@@ -299,3 +299,40 @@ def test_a_model_with_no_known_effort_omits_it_rather_than_inventing_one() -> No
 
     assert '-c model="my-own-gpt-oss"' in rendered
     assert "model_reasoning_effort" not in rendered
+
+
+# -- two namespaces, one lookup ----------------------------------------------
+
+
+def test_a_stale_selector_is_not_rendered_as_a_model_codex_could_ask_for() -> None:
+    """`default_model` is a QCS selector; what is rendered is a served name.
+
+    A profile stores the stable library id. Rendering an id that matches nothing
+    would hand Codex a name this server never published, and the launch would
+    quietly not use this server at all.
+    """
+    chosen = settings(default_model="library-gone", available=BOTH)
+
+    assert chosen.model is None
+    assert chosen.needs_a_model is True
+
+
+def test_a_served_name_cannot_shadow_another_model_s_library_id() -> None:
+    """The ambiguity a single merged lookup introduces.
+
+    One model's served name may equal another's library id -- nothing forbids
+    it, since the two are different namespaces. Resolving both from one mapping
+    made the answer depend on iteration order, so renaming one model could
+    redirect a profile that points at another.
+    """
+    renamed = LaunchModel(id="library-a", slug="library-b", reasoning_effort="low")
+    other = LaunchModel(id="library-b", slug="codex-local", reasoning_effort="high")
+
+    # Both orderings, because order is exactly what a merged mapping made the
+    # answer depend on.
+    for available in ((renamed, other), (other, renamed)):
+        resolved = settings(default_model="library-b", available=available)
+
+        assert resolved.model is other, available
+        assert resolved.model.slug == "codex-local"
+        assert 'model = "codex-local"' in render_config(resolved)

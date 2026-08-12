@@ -93,6 +93,9 @@ class GenerationOutcome:
     # Time spent waiting for the worker, measured rather than inferred. One
     # generation runs at a time, so this is where a busy server shows up.
     queue_wait_seconds: float = 0.0
+    # Exact token that matched the configured stop set. Kept as an id so this
+    # layer stays independent of Harmony; the protocol layer classifies it.
+    stop_token_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -537,6 +540,7 @@ class MlxEngine:
 
         generated: list[int] = []
         finish_reason = FinishReason.LENGTH
+        stop_token_id: int | None = None
         started = time.perf_counter()
         first_token_at: float | None = None
 
@@ -589,6 +593,7 @@ class MlxEngine:
 
             if token_id in stop:
                 finish_reason = FinishReason.STOP
+                stop_token_id = token_id
                 break
 
             # Polled after the token is recorded, so a cancelled turn keeps
@@ -613,4 +618,5 @@ class MlxEngine:
             finish_reason=finish_reason,
             timing=timing,
             cached_tokens=lookup.cached_tokens,
+            stop_token_id=stop_token_id,
         )

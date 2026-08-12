@@ -23,8 +23,9 @@ import App from "./App";
 const mocked = vi.mocked(invoke);
 
 const MODELS = [
-  { slug: "gpt-oss-20b", reasoning_effort: "medium" },
-  { slug: "gpt-oss-120b", reasoning_effort: "high" },
+  { id: "gpt-oss-20b", slug: "gpt-oss-20b", display_name: "GPT-OSS 20B", reasoning_effort: "medium" },
+  { id: "gpt-oss-120b", slug: "gpt-oss-120b", display_name: "GPT-OSS 120B", reasoning_effort: "high" },
+  { id: "library-7f3a", slug: "codex-local", display_name: "My Local Model", reasoning_effort: "medium" },
 ];
 
 /** A running daemon whose generator answers for whichever model it is given. */
@@ -41,14 +42,12 @@ function running(launchDefault: string | null) {
     if (command === "daemon_status") return { lifecycle: { state: "idle" }, server: {}, prompt_cache: {} };
     if (command === "codex_launch_models") return { default: launchDefault, models: MODELS };
     if (command === "codex_launch_command") {
-      const slug = String(args?.model);
-      const effort = MODELS.find((m) => m.slug === slug)?.reasoning_effort;
-      return `codex -c model="${slug}" -c model_reasoning_effort="${effort}"`;
+      const model = MODELS.find((m) => m.id === String(args?.model));
+      return `codex -c model="${model?.slug}" -c model_reasoning_effort="${model?.reasoning_effort}"`;
     }
     if (command === "codex_launch_config") {
-      const slug = String(args?.model);
-      const effort = MODELS.find((m) => m.slug === slug)?.reasoning_effort;
-      return `model = "${slug}"\nmodel_reasoning_effort = "${effort}"`;
+      const model = MODELS.find((m) => m.id === String(args?.model));
+      return `model = "${model?.slug}"\nmodel_reasoning_effort = "${model?.reasoning_effort}"`;
     }
     return {};
   }) as never);
@@ -109,6 +108,22 @@ describe("the model the launch configuration names", () => {
     expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
   });
 
+  it("selects by stable id but generates the configured served name", async () => {
+    running(null);
+    render(<App />);
+    const select = await openPanel();
+
+    await userEvent.selectOptions(select, "library-7f3a");
+
+    expect(await screen.findByText(/model="codex-local"/)).toBeTruthy();
+    expect(mocked).toHaveBeenCalledWith("codex_launch_command", { model: "library-7f3a" });
+    expect(
+      screen.getByRole("option", {
+        name: /My Local Model — served as codex-local — reasoning medium/,
+      }),
+    ).toBeTruthy();
+  });
+
   it("does not change the profile's default by being chosen", async () => {
     running(null);
     render(<App />);
@@ -152,7 +167,7 @@ describe("the model the launch configuration names", () => {
     render(<App />);
     await openPanel();
 
-    expect(screen.getByRole("option", { name: /gpt-oss-20b — reasoning medium/ })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /gpt-oss-120b — reasoning high/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /GPT-OSS 20B — served as gpt-oss-20b — reasoning medium/ })).toBeTruthy();
+    expect(screen.getByRole("option", { name: /GPT-OSS 120B — served as gpt-oss-120b — reasoning high/ })).toBeTruthy();
   });
 });

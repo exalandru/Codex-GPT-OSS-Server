@@ -65,8 +65,7 @@ from .model_settings import load_model_settings
 from .models import (
     ModelRegistry,
     ServedModel,
-    served_models_from_library,
-    slug_for,
+    resolve_served_catalogue,
 )
 from .routing import ToolRouter
 
@@ -76,6 +75,17 @@ logger = logging.getLogger(__name__)
 # real cap is whatever is left of the context window; this only stops an
 # unbounded generation from running until the window is exhausted.
 DEFAULT_MAX_OUTPUT_TOKENS = 32768
+
+#: What a client is told when a turn ended with neither of the two things an
+#: assistant turn can end with. Content-free by construction: it describes the
+#: shape of the turn and quotes nothing the model produced.
+REASONING_ONLY_COMPLETION = (
+    "Generation stopped without a final answer or a tool call. "
+    "The turn was not reported as complete."
+)
+
+#: The wire code for that classification, on both the JSON and the SSE path.
+EMPTY_COMPLETION_CODE = "empty_completion"
 
 
 @dataclass(frozen=True)
@@ -129,33 +139,42 @@ def refresh_registry(context: ServerContext) -> None:
     try:
         reports = load_registry().report()
         overrides = load_model_settings().overrides
-    except Exception as exc:  # noqa: BLE001 - a broken library must not kill the daemon
-        logger.warning("Could not read the model library: %s", exc)
-        return
-    context.registry.replace_all(
-        served_models_from_library(
+        catalogue = resolve_served_catalogue(
             reports,
             default_effort=context.defaults.reasoning_effort,
             overrides=overrides,
         )
-    )
+    except Exception as exc:  # noqa: BLE001 - a broken library must not kill the daemon
+        logger.warning("Could not read the model library: %s", exc)
+        return
+
+    # An unusable served name removes *that* name from the catalogue and nothing
+    # else. Refusing to build the catalogue at all would let one ambiguous pair
+    # stop the daemon from starting, taking every unaffected model down with it
+    # and leaving no running server through which to fix the configuration.
+    for problem in catalogue.problems:
+        logger.warning("Not serving a model: %s", problem.message)
+    context.registry.replace_all(catalogue.models)
 
 
-async def _preload(context: ServerContext, slug: str) -> None:
+async def _preload(context: ServerContext, selector: str) -> None:
     """Make one model resident in the background, after the server is answering.
+
+    ``selector`` is a QCS-internal reference -- a stable library id (what a
+    profile stores), a served name, or the model's path -- not a wire model id.
 
     Failure is logged and nothing else: the daemon is already serving, and a
     preload that cannot run is not a reason to take it down.
     """
-    model = context.registry.get(slug)
+    model = context.registry.select(selector)
     if model is None:
-        logger.warning("Cannot preload %r: it is not an installed, usable model", slug)
+        logger.warning("Cannot preload %r: it is not an installed, usable model", selector)
         return
     try:
         async with context.supervisor.lease(model):
             pass
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Preload of %s failed: %s", slug, exc)
+        logger.warning("Preload of %s failed: %s", model.slug, exc)
 
 
 def create_app(
@@ -431,7 +450,22 @@ def create_app(
                 outcome,
             )
             _log_result(model.slug, result, outcome)
-            _record_result(context.diagnostics, record, result, outcome)
+            completion_error = _completion_error(result, outcome)
+            _record_result(
+                context.diagnostics,
+                record,
+                result,
+                outcome,
+                renderer=renderer,
+                completion_error=completion_error,
+            )
+            if completion_error is not None:
+                raise ApiError(
+                    completion_error,
+                    status_code=500,
+                    error_type="server_error",
+                    code=EMPTY_COMPLETION_CODE,
+                )
 
             return JSONResponse(
                 build_response(
@@ -636,7 +670,24 @@ async def _stream_response(
         outcome,
     )
     _log_result(model.slug, result, outcome, streamed=True)
-    _record_result(diagnostics, record, result, outcome)
+    completion_error = _completion_error(result, outcome)
+    _record_result(
+        diagnostics,
+        record,
+        result,
+        outcome,
+        renderer=renderer,
+        completion_error=completion_error,
+    )
+
+    if completion_error is not None:
+        yield stream.failed(
+            message=completion_error,
+            error_type="server_error",
+            code=EMPTY_COMPLETION_CODE,
+        )
+        yield stream.done()
+        return
 
     yield stream.completed(output=completed_items, usage=build_usage(result))
     yield stream.done()
@@ -676,6 +727,9 @@ def _record_result(
     record: RequestRecord,
     result: CanonicalTurnResult,
     outcome: GenerationOutcome,
+    *,
+    renderer: HarmonyRenderer,
+    completion_error: str | None = None,
 ) -> None:
     """Close a diagnostic record from what actually happened.
 
@@ -693,16 +747,51 @@ def _record_result(
     record.tool_calls = [
         ToolCallRecord(name=call.name, namespace=call.namespace) for call in result.tool_calls
     ]
+    record.terminal_token_class = renderer.terminal_token_class(outcome.stop_token_id)
+    record.had_reasoning = any(segment.strip() for segment in result.reasoning)
+    record.had_tool_call = bool(result.tool_calls)
+    record.had_final_output = bool(result.text.strip())
+    record.empty_completion_detected = completion_error is not None
 
     diagnostics.finish(
         record,
-        {
-            FinishReason.LENGTH: Outcome.INCOMPLETE,
-            FinishReason.CANCELLED: Outcome.CANCELLED,
-        }.get(result.finish_reason, Outcome.COMPLETED),
+        (
+            Outcome.FAILED
+            if completion_error is not None
+            else {
+                FinishReason.LENGTH: Outcome.INCOMPLETE,
+                FinishReason.CANCELLED: Outcome.CANCELLED,
+            }.get(result.finish_reason, Outcome.COMPLETED)
+        ),
+        error=completion_error,
         finish_reason=result.finish_reason.value,
         last_channel=("commentary" if result.tool_calls else "final" if result.text else "analysis"),
     )
+
+
+def _completion_error(
+    result: CanonicalTurnResult, outcome: GenerationOutcome
+) -> str | None:
+    """Reject the terminal shape that masquerades as success.
+
+    Length, cancellation and engine errors already have protocol outcomes that
+    say what happened. A turn that simply *stopped*, carrying neither of the two
+    things an assistant turn can end with -- a final answer or a tool call --
+    has none: reporting it as completed is what puts `last_agent_message=null`
+    in front of a client that has no way to tell it apart from a real answer.
+
+    Reasoning is not part of the test. It is recorded (`had_reasoning`) because
+    it distinguishes the observed incident from an empty generation, but a turn
+    that produced nothing at all is no more complete than one that thought and
+    then produced nothing.
+    """
+    if (
+        outcome.finish_reason is FinishReason.STOP
+        and not result.tool_calls
+        and not result.text.strip()
+    ):
+        return REASONING_ONLY_COMPLETION
+    return None
 
 
 def _log_result(
@@ -872,8 +961,14 @@ def serve(
                     candidate,
                 )
             else:
-                preload = served_model_name or slug_for(candidate.name)
+                # The path itself, resolved against the library by
+                # `ModelRegistry.select`. Deriving a name from the directory
+                # here would be a third opinion about what this model is called,
+                # and it would be the wrong one for any model whose served name
+                # the user has since changed.
+                preload = served_model_name or str(candidate)
         else:
+            # A stable library id (what a profile stores) or a served name.
             preload = model
 
     app = create_app(

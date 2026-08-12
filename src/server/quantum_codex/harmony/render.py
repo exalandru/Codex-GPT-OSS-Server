@@ -169,6 +169,16 @@ class HarmonyRenderer:
         """
         return self._encoding.stop_tokens_for_assistant_actions()
 
+    def terminal_token_class(self, token_id: int | None) -> str | None:
+        """Classify a stop token without retaining any generated content."""
+        if token_id is None:
+            return None
+        token = self._encoding.decode([token_id])
+        return {
+            "<|call|>": "harmony_call",
+            "<|return|>": "harmony_return",
+        }.get(token, "other_stop")
+
     def render(self, turn: CanonicalTurn) -> list[int]:
         """Render a turn to prompt tokens, ready for completion.
 

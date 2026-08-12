@@ -467,10 +467,39 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
     Coercion and validation are the schema's, exactly as for a profile: the
     interface sends `field=value` strings and the server decides what they mean.
     """
-    from .model_settings import load_model_settings, save_model_settings
-    from .profile_schema import coerce_model, model_field_names, validate_model
+    import copy
+
+    from .library.catalog import defaults_for, display_name_for
+    from .library.registry import load_registry
+    from .model_settings import ModelSettings, load_model_settings, save_model_settings
+    from .models import resolve_served_catalogue, resolved_model_names, slug_for
+    from .profile_schema import (
+        MODEL_FIELDS,
+        coerce_model,
+        model_field_names,
+        validate_model,
+    )
 
     settings = load_model_settings()
+    reports = load_registry().report()
+    exact_matches = []
+    alias_matches = []
+    for report in reports:
+        names = resolved_model_names(report, overrides=settings.overrides)
+        if args.slug == names.library_id:
+            exact_matches.append((report, names))
+        elif args.slug in {names.served_name, slug_for(report.entry.name)}:
+            alias_matches.append((report, names))
+    matches = exact_matches or alias_matches
+    if not matches:
+        known = ", ".join(getattr(report.entry, "id", "") for report in reports) or "none"
+        raise ConfigError(f"no model with id or served name {args.slug!r}. Known model ids: {known}")
+    if len(matches) > 1:
+        raise ConfigError(
+            f"model name {args.slug!r} is ambiguous; configure by immutable library id"
+        )
+    report, names = matches[0]
+    model_id = names.library_id
 
     if args.assignments:
         known = model_field_names()
@@ -492,10 +521,38 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
         if problems:
             raise ConfigError("; ".join(f"{p.field}: {p.message}" for p in problems))
 
-        settings.set(args.slug, values)
+        candidate = ModelSettings(overrides=copy.deepcopy(settings.overrides))
+        candidate.set(model_id, values)
+
+        # The same construction the daemon uses is the oracle: a save that would
+        # make two models answer to one name is refused while the user is still
+        # looking at the form.
+        #
+        # What is compared is *new* ambiguity, not any ambiguity. A library can
+        # already contain a contested name -- importing a second copy of a model
+        # is enough, and no configuration was involved -- and refusing every
+        # subsequent edit would leave the user unable to change anything,
+        # including the served name that would resolve it.
+        before = {
+            problem.served_name
+            for problem in resolve_served_catalogue(
+                reports, overrides=settings.overrides
+            ).problems
+        }
+        introduced = [
+            problem
+            for problem in resolve_served_catalogue(
+                reports, overrides=candidate.overrides
+            ).problems
+            if problem.served_name not in before
+        ]
+        if introduced:
+            raise ConfigError("; ".join(problem.message for problem in introduced))
+
+        settings = candidate
         save_model_settings(settings)
 
-    current = settings.for_model(args.slug)
+    current = settings.for_model(model_id)
 
     # Three separate things, kept separate:
     #
@@ -507,16 +564,26 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
     # to know which of those values are merely inherited so it does not save
     # them back as overrides. Collapsing them would turn opening a form into a
     # silent write of every default.
-    from .library.catalog import defaults_for
-
-    defaults = defaults_for(args.slug)
+    defaults = {
+        field.name: field.default
+        for field in MODEL_FIELDS
+        if field.default is not None
+    }
+    defaults.update(defaults_for(names.catalog_slug))
+    defaults.update(
+        {
+            "display_name": display_name_for(names.catalog_slug) or report.entry.name,
+            "served_model_name": defaults.get("served_model_name") or names.catalog_slug,
+            "context_length": report.context_length or defaults.get("context_length"),
+        }
+    )
     effective = {**defaults, **current}
 
     if getattr(args, "json", False):
         print(
             json.dumps(
                 {
-                    "model": args.slug,
+                    "model": model_id,
                     "settings": current,
                     "defaults": defaults,
                     "effective": effective,
@@ -528,7 +595,7 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
         return 0
 
     if not current:
-        print(f"{args.slug}: no overrides; using the server defaults")
+        print(f"{model_id}: no overrides; using the server defaults")
         return 0
     for name in sorted(current):
         print(f"  {name:<20} {current[name]}")
@@ -582,8 +649,18 @@ def _cmd_models_catalog(args: argparse.Namespace) -> int:
     """
     from .library.catalog import merge
     from .library.registry import load_registry
+    from .model_settings import load_model_settings
 
-    print(json.dumps({"models": merge(load_registry().report())}, indent=2))
+    print(
+        json.dumps(
+            {
+                "models": merge(
+                    load_registry().report(), overrides=load_model_settings().overrides
+                )
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -684,7 +761,12 @@ def _cmd_models_import(args: argparse.Namespace) -> int:
     save_registry(registry)
 
     if getattr(args, "json", False):
-        print(json.dumps({"imported": entry.path, "name": entry.name}, indent=2))
+        print(
+            json.dumps(
+                {"id": entry.id, "imported": entry.path, "name": entry.name},
+                indent=2,
+            )
+        )
         return 0
 
     print(f"added {entry.name}")
@@ -903,41 +985,55 @@ def _cmd_profiles_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _installed_slugs() -> list[str]:
-    """Model ids the library currently holds, for the schema's model choices."""
-    from .library.registry import load_registry
-    from .models import served_models_from_library
+def _served_models() -> list:
+    """What this server would serve right now, resolved exactly as it resolves it.
 
-    try:
-        return [model.slug for model in served_models_from_library(load_registry().report())]
-    except Exception:  # noqa: BLE001 - a broken library must not break the form
-        return []
+    The same construction the daemon makes -- library reports plus the per-model
+    overrides -- so no interface can resolve a model, a name or an effort
+    differently from the server that will answer the request.
 
-
-def _launch_models() -> list:
-    """Installed models with their **effective** reasoning effort.
-
-    Built from `served_models_from_library` with the per-model overrides applied
-    — the same call the daemon makes to decide what it serves — so the launch
-    configuration cannot resolve a model, or an effort, differently from the
-    server that will answer the request. `_installed_slugs` deliberately does
-    not pass overrides: it only needs names for a choice list, and this needs
-    the value a request would actually get.
+    Uses the contained reading: a model whose served name is ambiguous is left
+    out, and every other model is still offered. The strict reading belongs to
+    the boundary that *stores* a configuration, not to a form asking what exists.
     """
-    from .codex.launch import LaunchModel
     from .library.registry import load_registry
     from .model_settings import load_model_settings
-    from .models import served_models_from_library
+    from .models import resolve_served_catalogue
 
     try:
-        served = served_models_from_library(
+        catalogue = resolve_served_catalogue(
             load_registry().report(), overrides=load_model_settings().overrides
         )
     except Exception:  # noqa: BLE001 - a broken library must not break the form
         return []
+    return list(catalogue.models)
+
+
+def _installed_slugs() -> list[str]:
+    """Stable library ids, which is what a profile stores."""
+    return [model.id for model in _served_models()]
+
+
+def _model_choice_labels() -> dict[str, str]:
+    """How to name those ids to a human, without storing the name."""
+    return {
+        model.id: f"{model.display_name} — served as {model.slug}"
+        for model in _served_models()
+    }
+
+
+def _launch_models() -> list:
+    """Installed models with their **effective** reasoning effort."""
+    from .codex.launch import LaunchModel
+
     return [
-        LaunchModel(slug=model.slug, reasoning_effort=model.default_reasoning_effort.value)
-        for model in served
+        LaunchModel(
+            id=model.id,
+            slug=model.slug,
+            display_name=model.display_name,
+            reasoning_effort=model.default_reasoning_effort.value,
+        )
+        for model in _served_models()
     ]
 
 
@@ -949,7 +1045,7 @@ def _cmd_profiles_schema(_args: argparse.Namespace) -> int:
     """
     from .profile_schema import schema
 
-    print(json.dumps(schema(_installed_slugs()), indent=2))
+    print(json.dumps(schema(_installed_slugs(), labels=_model_choice_labels()), indent=2))
     return 0
 
 
@@ -1137,9 +1233,14 @@ def _cmd_codex_launch(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "default": settings.model.slug if settings.model else None,
+                    "default": settings.model.library_id if settings.model else None,
                     "models": [
-                        {"slug": m.slug, "reasoning_effort": m.reasoning_effort}
+                        {
+                            "id": m.library_id,
+                            "slug": m.slug,
+                            "display_name": m.display_name,
+                            "reasoning_effort": m.reasoning_effort,
+                        }
                         for m in settings.available
                     ],
                 },

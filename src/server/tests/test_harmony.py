@@ -80,6 +80,15 @@ def test_stop_tokens_include_the_tool_call_terminator(renderer: HarmonyRenderer)
     assert "<|return|>" in stop_text
 
 
+def test_stop_tokens_have_content_free_terminal_classes(renderer: HarmonyRenderer) -> None:
+    encoding = load_encoding()
+    by_text = {encoding.decode([token]): token for token in renderer.stop_tokens}
+
+    assert renderer.terminal_token_class(by_text["<|call|>"]) == "harmony_call"
+    assert renderer.terminal_token_class(by_text["<|return|>"]) == "harmony_return"
+    assert renderer.terminal_token_class(None) is None
+
+
 def _completion_tokens(harmony_text: str) -> list[int]:
     """Encode assistant output the way the model would have generated it."""
     return load_encoding().encode(harmony_text, allowed_special="all")
@@ -95,6 +104,18 @@ def test_parse_separates_reasoning_from_the_answer() -> None:
 
     assert parsed.text == "Hello!"
     assert parsed.reasoning == ("The user greeted me.",)
+
+
+def test_parse_exposes_a_reasoning_only_terminal_turn() -> None:
+    tokens = _completion_tokens(
+        "<|channel|>analysis<|message|>I should call a tool.<|return|>"
+    )
+
+    parsed = parse_completion(tokens)
+
+    assert parsed.reasoning == ("I should call a tool.",)
+    assert parsed.text == ""
+    assert parsed.tool_calls == ()
 
 
 def test_parse_keeps_multiple_reasoning_segments_in_order() -> None:

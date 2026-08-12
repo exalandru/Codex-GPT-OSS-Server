@@ -84,10 +84,16 @@ def test_an_unusable_installed_model_still_reconciles_rather_than_duplicating() 
     assert hundred["model"]["state"] == ModelState.MISSING_VOLUME.value
 
 
-def test_two_directories_for_one_supported_model_produce_one_card() -> None:
+def test_a_second_directory_for_one_preset_remains_configurable() -> None:
     merged = merge([report("gpt-oss-20b-mxfp4-bf16"), report("gpt-oss-20b-MXFP4-Q8")])
 
-    assert [m["slug"] for m in merged] == ["gpt-oss-20b", "gpt-oss-120b"]
+    assert [m["slug"] for m in merged] == [
+        "gpt-oss-20b",
+        "gpt-oss-120b",
+        "gpt-oss-20b",
+    ]
+    assert merged[2]["supported"] is False
+    assert merged[2]["installed"] is True
 
 
 def test_every_catalog_entry_has_a_distinct_slug() -> None:

@@ -79,8 +79,12 @@ export const unloadModel = () => invoke<unknown>("model_unload");
 export const tailLogs = (lines = 300) => invoke<string[]>("logs_tail", { lines });
 /** One model this server can be pointed at, as the server resolves it. */
 export interface LaunchModel {
+  /** Stable library identity used by desktop selectors and profiles. */
+  id: string;
   /** The served id `/v1/models` publishes and the server routes on. */
   slug: string;
+  /** Human-facing name shown by QCS. */
+  display_name: string | null;
   /** Effective effort: catalogue default, then the per-model override. */
   reasoning_effort: string | null;
 }
@@ -88,6 +92,7 @@ export interface LaunchModel {
 export interface LaunchModels {
   /** What the generator would pick unprompted — the profile's default, or the
    *  single installed model. `null` when the user must choose. */
+  /** Stable library id, not the mutable served name. */
   default: string | null;
   models: LaunchModel[];
 }

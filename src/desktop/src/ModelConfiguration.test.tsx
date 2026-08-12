@@ -266,3 +266,103 @@ describe("effective defaults on first open", () => {
     expect(field.closest(".setting")?.className).toContain("setting-inherited");
   });
 });
+
+/** An imported model is configured with this same form, and its edits stick.
+ *
+ * The store here answers `model_config` from what `set_model_config` wrote, so
+ * a form that only appeared to save -- writing an assignment and then showing
+ * its own optimistic copy -- fails on reopen.
+ */
+describe("an imported model", () => {
+  const SCHEMA_WITH_DISPLAY = {
+    ...MODEL_SCHEMA,
+    fields: [
+      { name: "display_name", label: "Display name", kind: "string", group: "basic", help: "" },
+      ...MODEL_SCHEMA.fields,
+    ],
+  };
+
+  function withStore(store: Record<string, Record<string, unknown>>) {
+    mocked.mockImplementation(async (command: string, args?: unknown) => {
+      const slug = String((args as { slug?: string } | undefined)?.slug);
+      if (command === "model_config_schema") return SCHEMA_WITH_DISPLAY;
+      if (command === "set_model_config") {
+        const assignments = (args as { assignments?: string[] }).assignments ?? [];
+        const current = { ...(store[slug] ?? {}) };
+        for (const assignment of assignments) {
+          const [name, value] = [
+            assignment.slice(0, assignment.indexOf("=")),
+            assignment.slice(assignment.indexOf("=") + 1),
+          ];
+          if (value === "") delete current[name];
+          else current[name] = value;
+        }
+        store[slug] = current;
+        return { model: slug, settings: current };
+      }
+      if (command === "model_config") {
+        const overrides = store[slug] ?? {};
+        return {
+          model: slug,
+          settings: overrides,
+          defaults: {},
+          effective: { ...overrides },
+          inherited: [],
+        };
+      }
+      return { message: "ok" };
+    });
+  }
+
+  it("keeps a display name and a served name after a save and a reopen", async () => {
+    const store: Record<string, Record<string, unknown>> = {};
+    withStore(store);
+
+    const first = render(
+      <ModelConfiguration slug="library-7f3a" displayName="my-own-gpt-oss" onClose={() => {}} />,
+    );
+    await userEvent.type(await screen.findByLabelText(/display name/i), "My Local Model");
+    await userEvent.type(screen.getByLabelText(/served as/i), "codex-local");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(mocked).toHaveBeenCalledWith("set_model_config", {
+        slug: "library-7f3a",
+        assignments: ["display_name=My Local Model", "served_model_name=codex-local"],
+      }),
+    );
+    first.unmount();
+
+    // Reopened by the same stable id, which is what the identity is for.
+    render(
+      <ModelConfiguration slug="library-7f3a" displayName="My Local Model" onClose={() => {}} />,
+    );
+
+    expect(((await screen.findByLabelText(/display name/i)) as HTMLInputElement).value).toBe(
+      "My Local Model",
+    );
+    expect((screen.getByLabelText(/served as/i) as HTMLInputElement).value).toBe("codex-local");
+    expect(store["library-7f3a"]).toEqual({
+      display_name: "My Local Model",
+      served_model_name: "codex-local",
+    });
+  });
+
+  it("shows the server's refusal of a name rather than deciding for itself", async () => {
+    withStore({});
+    mocked.mockImplementationOnce(async () => SCHEMA_WITH_DISPLAY);
+    render(
+      <ModelConfiguration slug="library-7f3a" displayName="my-own-gpt-oss" onClose={() => {}} />,
+    );
+    await screen.findByLabelText(/served as/i);
+    mocked.mockImplementation(async (command: string) => {
+      if (command === "set_model_config") throw new Error("served name 'codex-local' is claimed");
+      return SCHEMA_WITH_DISPLAY;
+    });
+
+    await userEvent.type(screen.getByLabelText(/served as/i), "codex-local");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText(/is claimed/)).toBeTruthy();
+  });
+});

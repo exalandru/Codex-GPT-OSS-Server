@@ -30,6 +30,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -109,7 +110,12 @@ def logs_dir() -> Path:
 # -- atomic I/O ---------------------------------------------------------------
 
 
-def read_json(path: Path, *, expected_version: int) -> dict[str, Any] | None:
+def read_json(
+    path: Path,
+    *,
+    expected_version: int,
+    migrator: Callable[[dict[str, Any], int, int], dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     """Read a versioned file, or ``None`` when it does not exist yet."""
     if not path.is_file():
         return None
@@ -132,6 +138,8 @@ def read_json(path: Path, *, expected_version: int) -> dict[str, Any] | None:
             f"{path} was written by a newer version (schema {version}, this build "
             f"understands {expected_version}). Upgrade, or move the file aside."
         )
+    if isinstance(version, int) and version < expected_version and migrator is not None:
+        return migrator(data, version, expected_version)
     return migrate(data, path=path, expected_version=expected_version)
 
 
