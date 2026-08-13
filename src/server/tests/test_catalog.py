@@ -100,3 +100,27 @@ def test_every_catalog_entry_has_a_distinct_slug() -> None:
     slugs = [entry.slug for entry in SUPPORTED]
 
     assert len(slugs) == len(set(slugs))
+
+
+# -- adapters ----------------------------------------------------------------
+
+
+def test_a_card_says_when_modified_weights_answer_for_a_model() -> None:
+    """Otherwise the card is identical with and without a LoRA applied, and a
+    user comparing two answers has nothing to attribute the difference to."""
+    merged = merge(
+        [report("gpt-oss-20b-mxfp4-bf16")],
+        overrides={"gpt-oss-20b": {"adapter_path": "/adapters/style-fr"}},
+    )
+
+    twenty = next(m for m in merged if m["slug"] == "gpt-oss-20b")
+    hundred = next(m for m in merged if m["slug"] == "gpt-oss-120b")
+    assert twenty["adapter_path"] == "/adapters/style-fr"
+    assert hundred["adapter_path"] is None
+
+
+def test_a_model_with_no_adapter_says_so_rather_than_omitting_the_key() -> None:
+    # The interface reads this field on every card; an absent key and a null
+    # would have to be read differently for no reason.
+    for item in merge([report("gpt-oss-20b-mxfp4-bf16")]):
+        assert item["adapter_path"] is None

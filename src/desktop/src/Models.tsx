@@ -32,7 +32,7 @@ const STATES: Record<string, { label: string; tone: "ok" | "warn" | "bad" }> = {
 
 type Busy = "import" | "scan" | "forget" | "download" | null;
 
-export function Models() {
+export function Models({ serverRunning = false }: { serverRunning?: boolean }) {
   const [library, setLibrary] = useState<unknown>(null);
   const [catalog, setCatalog] = useState<Record<string, unknown>[]>([]);
   const [configuring, setConfiguring] = useState<{ slug: string; name: string } | null>(null);
@@ -185,6 +185,7 @@ export function Models() {
               ) : (
                 <p className="catalog-note">{String(entry.note ?? "")}</p>
               )}
+              {entry.installed === true && <AdapterNote entry={entry} />}
               {entry.served_conflict === true && (
                 <p className="notice notice-error" role="alert">
                   Another installed model is also served as{" "}
@@ -328,6 +329,7 @@ export function Models() {
         <ModelConfiguration
           slug={configuring.slug}
           displayName={configuring.name}
+          serverRunning={serverRunning}
           onClose={() => setConfiguring(null)}
           // The list is the server's answer about these models, and a save has
           // just changed it. Re-read rather than patch: a name assembled here
@@ -439,6 +441,26 @@ export function Models() {
   );
 }
 
+/** Whether modified weights answer for this model.
+ *
+ * Nothing else on either card would say so — not the display name, not the
+ * served name, not the size — so a model with a LoRA applied and one without
+ * would be indistinguishable while answering differently. One component for
+ * both card shapes, so the two cannot come to disagree about how it is said.
+ *
+ * This is the *configured* adapter. Whether it actually reached the weights is
+ * measured when they load, and reported on the dashboard.
+ */
+function AdapterNote({ entry }: { entry: Record<string, unknown> }) {
+  const path = entry.adapter_path;
+  if (typeof path !== "string" || path === "") return null;
+  return (
+    <p className="library-detail">
+      <span className="pill pill-warn">LoRA</span> <code className="library-path">{path}</code>
+    </p>
+  );
+}
+
 function ModelRow({
   entry,
   model,
@@ -476,6 +498,8 @@ function ModelRow({
       <p className="library-detail">
         Served as <code>{String(entry.served_name ?? entry.slug)}</code>
       </p>
+
+      <AdapterNote entry={entry} />
 
       {/* Two models answering to one name are served by neither: the server
           cannot know which weights a request meant. Said here because the

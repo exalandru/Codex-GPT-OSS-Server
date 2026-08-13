@@ -50,6 +50,7 @@ from .harmony import (
     COMMENTARY,
     FINAL,
     HarmonyRenderer,
+    MalformedGeneration,
     StreamingParser,
     parse_completion,
 )
@@ -86,6 +87,18 @@ REASONING_ONLY_COMPLETION = (
 
 #: The wire code for that classification, on both the JSON and the SSE path.
 EMPTY_COMPLETION_CODE = "empty_completion"
+
+#: What a client is told when the model emitted Harmony the server does not
+#: accept. Content-free for the same reason as above: the malformed header is a
+#: server-side diagnostic, and putting the model's own broken output on the
+#: wire tells the client nothing it can act on.
+MALFORMED_GENERATION = (
+    "Generation did not conform to the Harmony format. "
+    "The turn was not reported as complete."
+)
+
+#: The wire code for it, on both the JSON and the SSE path.
+MALFORMED_GENERATION_CODE = "malformed_generation"
 
 
 @dataclass(frozen=True)
@@ -429,7 +442,20 @@ def create_app(
                 context.diagnostics.finish(record, Outcome.FAILED, error=str(exc))
                 raise
 
-            generation = parse_completion(outcome.tokens)
+            try:
+                generation = parse_completion(outcome.tokens)
+            except MalformedGeneration as exc:
+                # Reported, never repaired. Without this the parser's own error
+                # escaped as an unhandled 500 with a traceback, which told the
+                # client nothing and buried the one line that identifies the
+                # emission.
+                _record_malformed(context.diagnostics, record, exc)
+                raise ApiError(
+                    MALFORMED_GENERATION,
+                    status_code=502,
+                    error_type="server_error",
+                    code=MALFORMED_GENERATION_CODE,
+                ) from None
             router = ToolRouter(turn)
             resolved: list[ToolCall] = []
             for call in generation.tool_calls:
@@ -571,6 +597,26 @@ async def _stream_response(
         open_kind, open_item_id, open_call_id, buffer = None, None, None, []
         return frame
 
+    def _close_partial() -> str | None:
+        """Close an announced item when the turn dies, except a tool call.
+
+        `output_item.done` on a function call says the call is complete and
+        ready to dispatch; a client that acts on it would run arguments the
+        model was still generating -- truncated JSON at best, a shorter command
+        that happens to parse at worst. An unfinished call stays unfinished,
+        and `response.failed` is what the client acts on instead.
+
+        Guarded on its own: a second failure here must not replace the one that
+        actually ended the stream.
+        """
+        if open_kind is None or open_kind[1] is not None:
+            return None
+        try:
+            return close_open_item()
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to close the open item after a mid-stream failure")
+            return None
+
     try:
         async for produced in engine.generate_stream(prompt_tokens, **generate_args):
             if isinstance(produced, GenerationOutcome):
@@ -649,8 +695,37 @@ async def _stream_response(
         # disconnect is an outcome, and one that explains a truncated session.
         diagnostics.finish(record, Outcome.CANCELLED, error="client disconnected")
         raise
+    except MalformedGeneration as exc:
+        # The model emitted Harmony this server does not accept. Reported with
+        # a stable code and a content-free message; the offending header goes
+        # to the log and the diagnostics record, not onto the wire.
+        closing = _close_partial()
+        if closing is not None:
+            yield closing
+        _record_malformed(diagnostics, record, exc)
+        yield stream.failed(
+            message=MALFORMED_GENERATION,
+            code=MALFORMED_GENERATION_CODE,
+        )
+        yield stream.done()
+        return
     except Exception as exc:  # noqa: BLE001 - the client must learn the stream died
         logger.exception("generation failed mid-stream")
+        # An announced item is closed even when the turn dies, or the client is
+        # left holding an `output_item.added` that never resolves.
+        #
+        # A tool call is the exception, and deliberately so. `output_item.done`
+        # on a function call says the call is complete and ready to dispatch; a
+        # client that acts on it would run arguments the model was still
+        # generating -- truncated JSON at best, a shorter command that happens
+        # to parse at worst. An unfinished call stays unfinished, and
+        # `response.failed` is what the client acts on instead.
+        #
+        # Guarded on its own: a second failure here must not replace the one
+        # that actually ended the stream.
+        closing = _close_partial()
+        if closing is not None:
+            yield closing
         diagnostics.finish(record, Outcome.FAILED, error=str(exc))
         yield stream.failed(message=str(exc))
         yield stream.done()
@@ -901,17 +976,51 @@ def _resolve_max_output(
     return requested
 
 
+def _record_malformed(
+    diagnostics: Diagnostics, record: RequestRecord, exc: MalformedGeneration
+) -> None:
+    """Report a non-conformant generation once, and make it countable.
+
+    Logged at warning without a traceback: a model emitting bad Harmony is an
+    expected condition on this backend, and a stack trace for it buries the one
+    line that identifies the emission. The bounded header is the whole point --
+    every incident so far was diagnosed from that text and nothing else.
+    """
+    logger.warning(
+        "generation did not conform to Harmony: %s; header=%r (%s)",
+        exc.shape,
+        exc.header,
+        exc.cause or "no parser message",
+    )
+    record.malformed_generation = exc.shape
+    record.malformed_header = exc.header
+    diagnostics.finish(record, Outcome.FAILED, error=exc.shape)
+
+
 def _count_reasoning_tokens(renderer: HarmonyRenderer, reasoning: tuple[str, ...]) -> int:
     """Real token count for the analysis channel.
 
     Counted with the tokenizer, never estimated from character length
     (cahier 21). This measures the reasoning *text*, so it excludes the channel
     framing tokens -- which is what the Responses API reports.
+
+    ``disallowed_special=()`` because a measurement must not be able to fail.
+    The model writes literal ``<|…|>`` into its own reasoning -- `<|start|>`,
+    `<|channel|>`, `<|message|>` and `<|constrain|>` all survive inside a
+    message body -- and the encoder's default raises on exactly that. It did:
+    a turn that had already generated its answer, and already streamed its
+    deltas, died here counting them. Combined with the default empty
+    ``allowed_special`` the sequence is counted as the ordinary characters it
+    is, which is also why the figure is approximate for such text: one control
+    token the model emitted is counted as the several tokens its text spells.
     """
     if not reasoning:
         return 0
     encoding = renderer.encoding
-    return sum(len(encoding.encode(text, allowed_special=set())) for text in reasoning)
+    return sum(
+        len(encoding.encode(text, allowed_special=set(), disallowed_special=()))
+        for text in reasoning
+    )
 
 
 def serve(

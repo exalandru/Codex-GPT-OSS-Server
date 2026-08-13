@@ -173,23 +173,36 @@ async fn cancel_download() -> Result<Value, String> {
     daemon::cancel_download().await
 }
 
-/// Ask the user to choose a model directory.
+/// Ask the user to choose a directory, under a title that says what for.
 ///
 /// A native picker is one of the few things the interface genuinely cannot do
-/// itself. What comes back is a path and nothing more: whether it *is* a model
-/// is the server's judgement, made when the path is imported.
-#[tauri::command]
-async fn choose_model_directory(app: tauri::AppHandle) -> Option<String> {
+/// itself. What comes back is a path and nothing more: whether it is what the
+/// title asked for is the server's judgement, made when the path is used.
+async fn pick_folder(app: tauri::AppHandle, title: &str) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("Choose a GPT-OSS model directory")
+        .set_title(title)
         .pick_folder(move |chosen| {
             let _ = tx.send(chosen.map(|path| path.to_string()));
         });
     rx.await.ok().flatten()
+}
+
+#[tauri::command]
+async fn choose_model_directory(app: tauri::AppHandle) -> Option<String> {
+    pick_folder(app, "Choose a GPT-OSS model directory").await
+}
+
+/// Ask for a LoRA adapter directory.
+///
+/// Separate from the model picker for the title alone, which is the only thing
+/// telling the user which of the two kinds of directory this dialog wants.
+#[tauri::command]
+async fn choose_adapter_directory(app: tauri::AppHandle) -> Option<String> {
+    pick_folder(app, "Choose a LoRA adapter directory").await
 }
 
 /// Show a path in the Finder.
@@ -422,6 +435,7 @@ pub fn run() {
             start_download,
             cancel_download,
             choose_model_directory,
+            choose_adapter_directory,
             reveal_in_finder,
             daemon_status,
             daemon_start,

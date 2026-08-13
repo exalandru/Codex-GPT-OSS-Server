@@ -400,7 +400,7 @@ export default function App() {
 
 
       {view === "models" ? (
-        <Models />
+        <Models serverRunning={connected} />
       ) : view === "diagnostics" ? (
         <Diagnostics serverRunning={connected} />
       ) : view === "logs" ? (
@@ -761,6 +761,22 @@ function CurrentSession({
             }
           />
           <Row label="Served as" value={api.text(status, "model", "served_name")} mono />
+          {/* Present only when an adapter is resident, and reporting what was
+              *applied* rather than what was configured: the count is measured
+              against the loaded weights, so it is the one place that can tell
+              an adapter that took effect from one that did not. The Models tab
+              shows the configured path. */}
+          {api.pick(status, "model", "adapter") != null && (
+            <Row
+              label="LoRA adapter"
+              value={`${api.text(status, "model", "adapter", "fine_tune_type")} · ${api.count(
+                status,
+                "model",
+                "adapter",
+                "applied_tensors",
+              )}/${api.count(status, "model", "adapter", "adapter_tensors")} tensors applied`}
+            />
+          )}
           <Row label="Endpoint" value={api.text(status, "server", "endpoint")} mono />
           <Row label="Uptime" value={uptime(api.count(status, "server", "uptime_seconds"))} />
           {/* Enough to understand the feature without a live countdown: what was

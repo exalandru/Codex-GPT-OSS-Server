@@ -1024,3 +1024,35 @@ describe("install more models", () => {
     await waitFor(() => expect(mocked).toHaveBeenCalledWith("scan_models"));
   });
 });
+
+/** Modified weights answering for a model is not something a card can leave out.
+ *
+ * Nothing else on the row would say so — not the display name, not the served
+ * name, not the size — so two runs with and without a LoRA would look identical
+ * while answering differently.
+ */
+describe("a configured LoRA adapter", () => {
+  it("is named on the card when one is configured", async () => {
+    const local = installed("gpt-oss-20b-mxfp4-bf16");
+    respond([
+      {
+        ...preset("gpt-oss-20b", "GPT-OSS 20B", local),
+        adapter_path: "/Volumes/Weights/adapters/style-fr",
+      },
+    ]);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    expect(screen.getByText("LoRA")).toBeTruthy();
+    expect(screen.getByText("/Volumes/Weights/adapters/style-fr")).toBeTruthy();
+  });
+
+  it("says nothing when the model serves its base weights", async () => {
+    const local = installed("gpt-oss-20b-mxfp4-bf16");
+    respond([{ ...preset("gpt-oss-20b", "GPT-OSS 20B", local), adapter_path: null }]);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    expect(screen.queryByText("LoRA")).toBeNull();
+  });
+});

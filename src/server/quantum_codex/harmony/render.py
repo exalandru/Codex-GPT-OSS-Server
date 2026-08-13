@@ -71,16 +71,28 @@ FUNCTIONS_NAMESPACE = "functions"
 # generated output rather than against expectation.
 JSON_CONTENT_TYPE = "<|constrain|>json"
 
+#: The same content type as the value alone. The header is assembled from token
+#: ids now, so the ``<|constrain|>`` control token is emitted as a token and
+#: only ``json`` is encoded as text. `JSON_CONTENT_TYPE` above is what the
+#: *parser* reports the content type to be, and is what the tests compare
+#: against; the two must stay in step.
+JSON_CONTENT_TYPE_VALUE = "json"
+
 
 @dataclass(frozen=True)
 class _GeneratedToolCall:
-    """A message emitted as literal Harmony text rather than through the renderer.
+    """A message emitted as explicit Harmony tokens rather than through the renderer.
 
     Exists only for replayed tool calls, whose header ordering Harmony's
     renderer changes. See :meth:`HarmonyRenderer._render_tool_call`.
+
+    Carries token ids rather than text on purpose. Building the header as a
+    string and encoding it with ``allowed_special="all"`` promotes any
+    ``<|…|>`` the *model* wrote inside the arguments into a real control token,
+    which forges message structure in the next prompt.
     """
 
-    text: str
+    tokens: tuple[int, ...]
 
 
 def recipient_for(name: str, namespace: str | None) -> str:
@@ -147,6 +159,55 @@ def load_encoding() -> HarmonyEncoding:
     return load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
 
 
+@dataclass(frozen=True)
+class ControlTokens:
+    """The single-token ids Harmony structures a message with.
+
+    Lives here rather than in `parse`: this module owns the encoding, and both
+    the renderer and the parser need the same ids.
+    """
+
+    start: int
+    channel: int
+    constrain: int
+    message: int
+    call: int
+
+
+@functools.lru_cache(maxsize=1)
+def control_tokens() -> ControlTokens:
+    """Resolve the control tokens from the encoding rather than hard-coding ids.
+
+    They are stable for a given encoding, but they are the encoding's property,
+    not this module's, and a hard-coded id would fail silently if the pin moved.
+    """
+    encoding = load_encoding()
+
+    def one(text: str) -> int:
+        (token,) = encoding.encode(text, allowed_special="all")
+        return token
+
+    return ControlTokens(
+        start=one("<|start|>"),
+        channel=one("<|channel|>"),
+        constrain=one("<|constrain|>"),
+        message=one("<|message|>"),
+        call=one("<|call|>"),
+    )
+
+
+def encode_text(text: str) -> list[int]:
+    """Encode text as text, never as structure.
+
+    ``disallowed_special=()`` turns off the check that would otherwise raise on
+    a literal ``<|…|>``; combined with the default empty ``allowed_special`` it
+    means such a sequence is encoded as the ordinary characters it is. Both
+    halves matter: the default would raise, and ``allowed_special="all"`` would
+    promote it into a real control token.
+    """
+    return load_encoding().encode(text, disallowed_special=())
+
+
 class HarmonyRenderer:
     """Turns a :class:`CanonicalTurn` into prompt tokens for the model."""
 
@@ -210,7 +271,7 @@ class HarmonyRenderer:
         self, message: Message | _GeneratedToolCall, options: RenderOptions
     ) -> list[int]:
         if isinstance(message, _GeneratedToolCall):
-            return self._encoding.encode(message.text, allowed_special="all")
+            return list(message.tokens)
         return self._encoding.render(message, options)
 
     def count_tokens(self, turn: CanonicalTurn) -> int:
@@ -293,11 +354,34 @@ class HarmonyRenderer:
         library re-renders it. Harmony offers no option for this ordering, hence
         the explicit token emission; the arguments still come from the model
         verbatim.
+
+        Assembled from token ids rather than from a string. The recipient and
+        the arguments are model-authored and travel back through the client, so
+        encoding them as *text* is what stops a literal ``<|end|>`` in a tool
+        argument from becoming a real message terminator here -- forging
+        structure in the prompt the next generation reads.
+
+        The splits fall on control tokens and nowhere else. That is not a
+        stylistic choice: BPE is not split-invariant (``e("abc") + e("def")``
+        is not ``e("abcdef")``), so splitting inside a text run could change
+        the tokens for ordinary inputs. Splitting only where a control token
+        already forces a boundary makes this byte-identical to the string form
+        by construction, which the prompt cache depends on.
         """
+        control = control_tokens()
         recipient = recipient_for(item.name, item.namespace)
         return _GeneratedToolCall(
-            f"<|start|>assistant<|channel|>{COMMENTARY} to={recipient} "
-            f"{JSON_CONTENT_TYPE}<|message|>{item.arguments}<|call|>"
+            (
+                control.start,
+                *encode_text("assistant"),
+                control.channel,
+                *encode_text(f"{COMMENTARY} to={recipient} "),
+                control.constrain,
+                *encode_text(JSON_CONTENT_TYPE_VALUE),
+                control.message,
+                *encode_text(item.arguments),
+                control.call,
+            )
         )
 
     def _render_item(self, item: CanonicalItem) -> Message | _GeneratedToolCall:

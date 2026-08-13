@@ -87,11 +87,32 @@ class ServedModel:
 
     quantization: str | None = None
     path: str | None = None
+    # An optional LoRA adapter applied on top of the weights at `path`. It sits
+    # here, beside the path, rather than with the sampling defaults above: it is
+    # part of *which weights these are*, not of how a request generates from
+    # them. `load_identity` below is what makes that structural.
+    adapter_path: str | None = None
     extra: dict[str, object] = field(default_factory=dict)
 
     @property
     def effective_context_window(self) -> int:
         return self.context_window * self.effective_context_percent // 100
+
+    @property
+    def load_identity(self) -> tuple[str | None, str | None, int, str | None]:
+        """What must match for resident weights to be the ones this model names.
+
+        Deliberately not the slug. The slug is the name a request asks for; this
+        is the set of facts that decide which weights answer it. Two models
+        sharing a slug but not an adapter are different weights, and answering a
+        request for one with the other is exactly the failure a lease exists to
+        prevent — it simply could not be expressed before, because the name and
+        the weights were the same question.
+
+        Kept as one expression, in the type that owns the facts, so no consumer
+        can build a second version of it and disagree.
+        """
+        return (self.library_id, self.path, self.context_window, self.adapter_path)
 
     @property
     def id(self) -> str:
@@ -356,6 +377,7 @@ def resolve_served_catalogue(
                 ),
                 quantization=report.quantization,
                 path=report.entry.path,
+                adapter_path=_optional_path(chosen.get("adapter_path")),
                 max_output_tokens=_optional_int(chosen.get("max_output_tokens")),
                 temperature=_optional_float(chosen.get("temperature")),
                 top_p=_optional_float(chosen.get("top_p")),
@@ -409,3 +431,14 @@ def _optional_int(value: Any) -> int | None:
 
 def _optional_float(value: Any) -> float | None:
     return float(value) if value is not None else None
+
+
+def _optional_path(value: Any) -> str | None:
+    """A blank is an absence, not a value.
+
+    ``Path("")`` is the current directory, so an empty string surviving into
+    the engine would ask MLX to load the daemon's working directory as an
+    adapter. A hand-edited settings file is enough to produce one.
+    """
+    text = str(value).strip() if value is not None else ""
+    return text or None

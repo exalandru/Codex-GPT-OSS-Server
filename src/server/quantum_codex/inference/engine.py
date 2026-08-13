@@ -64,6 +64,30 @@ class EngineState(StrEnum):
     FAILED = "failed"
 
 
+class AdapterMismatchError(RuntimeError):
+    """The adapter loaded without error and changed nothing.
+
+    Not a load failure: the weights are fine and the adapter file is fine. What
+    is wrong is the pairing, and only comparing the two reveals it.
+    """
+
+
+@dataclass(frozen=True)
+class LoadedAdapter:
+    """The adapter actually applied to the resident weights.
+
+    Every field here is measured after the load, never copied from the setting
+    that asked for it. A status line that echoed the configured path back would
+    be unable to tell an applied adapter from an inert one, and that is the
+    whole failure this type exists to make visible.
+    """
+
+    path: str
+    fine_tune_type: str
+    applied_tensors: int
+    adapter_tensors: int
+
+
 @dataclass(frozen=True)
 class LoadedModel:
     """Identity and shape of the model currently held by the worker."""
@@ -73,6 +97,7 @@ class LoadedModel:
     context_length: int
     quantization: str | None
     num_hidden_layers: int | None
+    adapter: LoadedAdapter | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +181,7 @@ class MlxEngine:
         # resident. Which model to hold is decided per request, by the slug the
         # client asked for.
         self._model_path: Path | None = None
+        self._adapter_path: Path | None = None
         self._served_name: str | None = None
         self._context_length = 0
 
@@ -232,15 +258,29 @@ class MlxEngine:
     # -- lifecycle -----------------------------------------------------------
 
     async def load(
-        self, model_path: str | Path, served_name: str, context_length: int
+        self,
+        model_path: str | Path,
+        served_name: str,
+        context_length: int,
+        *,
+        adapter_path: str | Path | None = None,
     ) -> LoadedModel:
         """Make one model resident. Replaces whatever was loaded before.
 
         The caller decides *when* switching is safe; this only performs it. See
         :mod:`quantum_codex.lifecycle`, which owns that judgement because it is
         the thing that knows about in-flight requests.
+
+        ``adapter_path`` is keyword-only because it decides which weights answer
+        requests. An argument that changes the answer should have to be named.
         """
-        return await self._run(self._load_on_worker, Path(model_path), served_name, context_length)
+        return await self._run(
+            self._load_on_worker,
+            Path(model_path),
+            served_name,
+            context_length,
+            Path(adapter_path) if adapter_path else None,
+        )
 
     @property
     def load_elapsed_seconds(self) -> float | None:
@@ -285,8 +325,13 @@ class MlxEngine:
         return self._prompt_cache.snapshot
 
     def _load_on_worker(
-        self, model_path: Path, served_name: str, context_length: int
+        self,
+        model_path: Path,
+        served_name: str,
+        context_length: int,
+        adapter_path: Path | None = None,
     ) -> LoadedModel:
+        import gc
         import json
 
         import mlx.core as mx
@@ -301,17 +346,43 @@ class MlxEngine:
         self._model_path = model_path
         self._served_name = served_name
         self._context_length = context_length
+        self._adapter_path = adapter_path
 
         self._state = EngineState.LOADING
         started = time.perf_counter()
         self._load_started_at = started
-        logger.info("Loading model %s from %s", served_name, model_path)
+        if adapter_path is None:
+            logger.info("Loading model %s from %s", served_name, model_path)
+        else:
+            logger.info(
+                "Loading model %s from %s with adapter %s", served_name, model_path, adapter_path
+            )
 
+        adapter: LoadedAdapter | None = None
         try:
-            self._model, self._tokenizer = mlx_load(str(self._model_path))
+            self._model, self._tokenizer = mlx_load(
+                str(self._model_path),
+                adapter_path=str(adapter_path) if adapter_path is not None else None,
+            )
+            # Inside the try, and before anything is published: a refused
+            # adapter must leave the engine in FAILED with nothing resident,
+            # not READY with a `LoadedModel` announcing an adapter that was
+            # rejected.
+            if adapter_path is not None:
+                adapter = self._witness_adapter(adapter_path)
         except Exception:
             self._state = EngineState.FAILED
             self._load_started_at = None
+            # A bad adapter raises *after* the base weights are materialised:
+            # `load_adapters` runs after `load_model` inside `mlx_load`. Nothing
+            # was assigned to `self._model`, so the release guard at the top of
+            # the next load will not fire, and tens of gigabytes would stay held
+            # until something else happened to collect them.
+            self._model = None
+            self._tokenizer = None
+            self._adapter_path = None
+            gc.collect()
+            mx.clear_cache()
             raise
 
         config: dict[str, Any] = {}
@@ -330,6 +401,7 @@ class MlxEngine:
             context_length=self._context_length,
             quantization=quantization,
             num_hidden_layers=config.get("num_hidden_layers"),
+            adapter=adapter,
         )
 
         self._prompt_cache.publish()
@@ -341,12 +413,74 @@ class MlxEngine:
         self._state = EngineState.READY
         self._load_started_at = None
         logger.info(
-            "Model %s ready in %.1fs (%s)",
+            "Model %s ready in %.1fs (%s%s)",
             self._served_name,
             time.perf_counter() - started,
             quantization or "unquantized",
+            ""
+            if adapter is None
+            else f", {adapter.fine_tune_type} adapter, "
+            f"{adapter.applied_tensors}/{adapter.adapter_tensors} tensors applied",
         )
         return self._loaded
+
+    def _witness_adapter(self, adapter_path: Path) -> LoadedAdapter:
+        """Prove the adapter reached the weights, rather than trusting the load.
+
+        ``load_adapters`` finishes with ``load_weights(..., strict=False)``,
+        which skips every key the module tree does not have and returns nothing.
+        An adapter trained against another model therefore loads perfectly and
+        applies to nothing: the configuration says one thing, the weights
+        answering requests say another, and no error is raised anywhere.
+
+        This is not a heuristic re-implementation of that match. ``load_weights``
+        matches against the flattened parameter tree, and this reads that same
+        tree afterwards, so the intersection below is the set of keys the loader
+        actually consumed.
+
+        What it does *not* cover: an adapter with the right names and the wrong
+        shapes. ``strict=False`` skips the shape check too, so those arrays are
+        installed as they are — and the warm-up immediately after this runs a
+        real forward pass over exactly those layers, which raises. Two
+        witnesses, two failure modes; neither substitutes for the other.
+        """
+        from mlx.utils import tree_flatten
+
+        from ..inspect_adapter import adapter_tensor_names, inspect_adapter
+
+        report = inspect_adapter(adapter_path)
+        adapter_keys = set(adapter_tensor_names(adapter_path))
+        model_keys = {name for name, _ in tree_flatten(self._model.parameters())}
+        applied = adapter_keys & model_keys
+
+        if not applied:
+            trained = f" (it names {report.trained_against})" if report.trained_against else ""
+            raise AdapterMismatchError(
+                f"The adapter at {adapter_path} shares no parameter with the model at "
+                f"{self._model_path}: none of its {len(adapter_keys)} tensors, such as "
+                f"{sorted(adapter_keys)[0]!r}, exist in these weights{trained}. It was "
+                "most likely trained against a different model. Clear the LoRA adapter "
+                "setting for this model, or point it at a matching adapter."
+            )
+
+        if len(applied) < len(adapter_keys):
+            # Legitimate: an adapter trained over fewer blocks than this model
+            # has, or over an explicit subset of layer keys. Worth saying, not
+            # worth refusing.
+            logger.warning(
+                "Adapter %s: %d of %d tensors applied; the rest name parameters this "
+                "model does not have",
+                adapter_path,
+                len(applied),
+                len(adapter_keys),
+            )
+
+        return LoadedAdapter(
+            path=str(adapter_path),
+            fine_tune_type=report.fine_tune_type or "lora",
+            applied_tensors=len(applied),
+            adapter_tensors=len(adapter_keys),
+        )
 
     def _warm_up(self) -> None:
         """Generate one token so kernel compilation is not billed to request 1."""
@@ -368,6 +502,7 @@ class MlxEngine:
         self._tokenizer = None
         self._loaded = None
         self._model_path = None
+        self._adapter_path = None
         self._served_name = None
         self._context_length = 0
         self._state = EngineState.UNLOADED
@@ -530,6 +665,7 @@ class MlxEngine:
             served_name=self._served_name,
             path=str(self._model_path),
             generation=self._load_generation,
+            adapter=str(self._adapter_path) if self._adapter_path else None,
         )
         lookup = self._prompt_cache.fetch(identity, prompt_tokens, hint=cache_hint)
         kv_cache = lookup.prompt_cache

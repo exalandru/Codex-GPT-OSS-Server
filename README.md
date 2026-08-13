@@ -1,6 +1,6 @@
 # Quantum Codex GPT-OSS Server
 
-![QCS Screenshot](assets/app-01.jpg)
+![QCS Screenshot](assets/app-01.png)
 
 
 **Run OpenAI Codex locally against GPT-OSS on your Apple Silicon Mac.**
@@ -20,6 +20,7 @@ Quantum Codex GPT-OSS Server is a native Codex backend for **GPT-OSS 20B and 120
 - **Prompt cache reuse** - repeated Codex turns reuse the shared prompt prefix instead of paying full prefill cost every time. In a measured 3-turn session, prefill dropped from **1.56 s → 0.16 s → 0.12 s**.
 - **Automatic model lifecycle** - the daemon can stay running with no model loaded. GPT-OSS loads on demand and can unload automatically after an idle timeout.
 - **20B and 120B built in** - download, locate or import the supported GPT-OSS models directly from the Models tab.
+- **LoRA adapters** - Can load LoRA adapters on runtime.
 - **Resumable downloads** - downloads preflight disk space, can be cancelled, keep partial data and resume instead of starting over.
 - **External-drive friendly** - choose where models are downloaded; unplugged model volumes are reported as `MISSING_VOLUME` rather than treated as deleted.
 - **Per-model settings** - configure reasoning effort, served name, context and other model-specific values independently for 20B and 120B.
@@ -251,7 +252,7 @@ If another Responses-compatible client happens to work, that is useful, but it i
 
 ## Prompt cache
 
-![QCS Screenshot 2](assets/app-02.jpg)
+![QCS Screenshot 2](assets/app-02.png)
 
 Codex replays the conversation prefix on every turn. QCS keeps compatible prompt/KV state so repeated prefixes can be reused instead of recomputed.
 

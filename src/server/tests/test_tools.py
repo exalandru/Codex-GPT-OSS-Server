@@ -361,25 +361,30 @@ def test_a_replayed_assistant_answer_carries_the_final_channel(
     assert "<|start|>assistant<|message|>hello" not in text
 
 
-def test_a_recipient_carrying_control_text_is_truncated_not_forwarded() -> None:
-    """Regression from a real session.
+def test_a_recipient_carrying_control_text_is_reported_not_salvaged() -> None:
+    """Regression from a real session, inverted.
 
     A call went out to Codex named `exec_command<|channel|>commentary`, which no
     client can route. Harmony puts raw control-token text in header fields — the
     same session showed `content_type` as `<|constrain|>json` — so a recipient
-    can pick it up too. Recovering the name beats losing the turn.
-    """
-    from quantum_codex.harmony.parse import split_recipient
+    can pick it up too.
 
-    assert split_recipient("functions.exec_command<|channel|>commentary") == (
-        "exec_command",
-        None,
-    )
-    assert split_recipient("multi_agent_v1.spawn_agent<|constrain|>json") == (
-        "spawn_agent",
-        "multi_agent_v1",
-    )
-    # A clean recipient is untouched.
+    Truncating at the marker recovers a plausible name. A plausible name is a
+    guess, and the guess dispatches a tool call the model never addressed: on a
+    native Codex backend that is worse than losing the turn, because the turn
+    then looks like it worked. Reported instead.
+    """
+    from quantum_codex.harmony.parse import MalformedGeneration, split_recipient
+
+    for recipient in (
+        "functions.exec_command<|channel|>commentary",
+        "multi_agent_v1.spawn_agent<|constrain|>json",
+        "<|channel|>commentary",
+    ):
+        with pytest.raises(MalformedGeneration):
+            split_recipient(recipient)
+
+    # A clean recipient is untouched, and no recipient is simply not a call.
     assert split_recipient("functions.exec_command") == ("exec_command", None)
-    # Nothing usable left is no tool call at all, rather than an empty name.
-    assert split_recipient("<|channel|>commentary") is None
+    assert split_recipient("multi_agent_v1.spawn_agent") == ("spawn_agent", "multi_agent_v1")
+    assert split_recipient(None) is None

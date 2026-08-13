@@ -21,11 +21,17 @@ import { Setting } from "./Configuration";
 export function ModelConfiguration({
   slug,
   displayName,
+  serverRunning = false,
   onClose,
   onSaved,
 }: {
   slug: string;
   displayName: string;
+  /** Whether a daemon is answering right now. It decides one thing here: a
+   *  setting that only takes effect at load has to say so while the server that
+   *  already loaded is still running, or a saved-but-not-applied value reads as
+   *  one that did not save. */
+  serverRunning?: boolean;
   onClose: () => void;
   /** A write landed on the server. The owner of the model list re-reads it.
    *
@@ -115,11 +121,24 @@ export function ModelConfiguration({
     try {
       const assignments = Object.entries(edits).map(([name, value]) => `${name}=${value}`);
       await api.setModelConfig(slug, assignments);
+
+      // Which of the saved fields the running server cannot honour yet. Said
+      // plainly, in the same words the profile form uses: a setting that
+      // saved but has not taken effect otherwise reads as one that failed.
+      const restarts = (schema?.fields ?? [])
+        .filter((field) => field.restart_required && field.name in edits)
+        .map((field) => field.label);
+
       setEdits({});
       setSaving(false);
       // Told before closing, so the list behind this dialog is re-read from the
       // server rather than left showing what it read before the save.
-      onSaved?.(`Saved ${displayName}.`);
+      onSaved?.(
+        restarts.length > 0 && serverRunning
+          ? `Saved ${displayName}. ${restarts.join(", ")} ` +
+              `${restarts.length === 1 ? "takes" : "take"} effect after a restart.`
+          : `Saved ${displayName}.`,
+      );
       onClose();
     } catch (cause) {
       // The server's words about which value it refused. The dialog stays open:
@@ -197,9 +216,18 @@ export function ModelConfiguration({
             <Setting
               field={field}
               value={shown(field.name)}
-              serverRunning={false}
+              serverRunning={serverRunning}
               onChange={(value) => setEdits((current) => ({ ...current, [field.name]: value }))}
               inherited={isInherited(field.name)}
+              // Named from the field rather than "Choose…": the download
+              // location's picker on the Configuration view carries that bare
+              // label, and two identically named buttons doing different
+              // things is exactly what a user cannot be expected to untangle.
+              browse={
+                field.kind === "path"
+                  ? { label: `Choose ${field.label}…`, run: api.chooseAdapterDirectory }
+                  : undefined
+              }
             />
             {!isInherited(field.name) && effective[field.name] !== undefined && (
               <button

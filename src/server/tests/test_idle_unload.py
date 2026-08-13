@@ -46,11 +46,13 @@ class FakeEngine:
     def __init__(self) -> None:
         self.state = EngineState.UNLOADED
         self.loads: list[str] = []
+        self.adapters: list[str | None] = []
         self.unloads = 0
         self.load_elapsed_seconds = None
 
-    async def load(self, path, served_name, context_length):  # noqa: ANN001
+    async def load(self, path, served_name, context_length, *, adapter_path=None):  # noqa: ANN001
         self.loads.append(served_name)
+        self.adapters.append(adapter_path)
         self.state = EngineState.READY
         return type(
             "Loaded",
@@ -59,6 +61,7 @@ class FakeEngine:
                 "served_name": served_name,
                 "quantization": "mxfp4-4bit",
                 "context_length": context_length,
+                "adapter": None,
             },
         )()
 
@@ -1071,7 +1074,7 @@ class RefusingLoad(FakeEngine):
         super().__init__()
         self.message = message
 
-    async def load(self, path, served_name, context_length):  # noqa: ANN001
+    async def load(self, path, served_name, context_length, *, adapter_path=None):  # noqa: ANN001
         if self.state is EngineState.READY:
             await self.unload()
         self.state = EngineState.FAILED
@@ -1200,7 +1203,7 @@ class BlockingLoad(FakeEngine):
         super().__init__()
         self.entered = asyncio.Event()
 
-    async def load(self, path, served_name, context_length):  # noqa: ANN001
+    async def load(self, path, served_name, context_length, *, adapter_path=None):  # noqa: ANN001
         self.entered.set()
         self.state = EngineState.LOADING
         await asyncio.Event().wait()  # never completes; the test cancels it
@@ -1262,7 +1265,7 @@ def test_a_cancelled_load_does_not_strand_a_previously_resident_model() -> None:
             self.entered = asyncio.Event()
             self.block_next = False
 
-        async def load(self, path, served_name, context_length):  # noqa: ANN001
+        async def load(self, path, served_name, context_length, *, adapter_path=None):  # noqa: ANN001
             if not self.block_next:
                 return await super().load(path, served_name, context_length)
             if self.state is EngineState.READY:
@@ -1307,7 +1310,7 @@ def test_the_next_request_after_a_cancelled_load_still_works() -> None:
             self.entered = asyncio.Event()
             self.block = True
 
-        async def load(self, path, served_name, context_length):  # noqa: ANN001
+        async def load(self, path, served_name, context_length, *, adapter_path=None):  # noqa: ANN001
             if self.block:
                 self.block = False
                 self.entered.set()

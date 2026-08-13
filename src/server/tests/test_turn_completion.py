@@ -193,6 +193,57 @@ HARMONY_CASES = {
         "<|channel|>analysis<|message|>Working on it.<|end|>"
         "<|start|>assistant<|channel|>final<|message|>Partial ans"
     ),
+    # G: a mis-sampled header. Observed in a real session as
+    # `unexpected tokens remaining in message header: Some("to=functions.exec")`,
+    # which the strict parser raises on `<|message|>` -- after the reasoning has
+    # already streamed. Repairable: the fragments name one recipient.
+    "malformed_header": (
+        "<|channel|>analysis<|message|>I need to look.<|end|>"
+        "<|start|>assistant<|channel|>commentary to=functions.exec_command "
+        'to=functions.exec_command<|message|>{"cmd":"ls"}<|call|>'
+    ),
+    # G': a header failure that is not repairable, reached with an item already
+    # open. Not a header at all: `<|channel|>` where `<|start|>` is required.
+    "unrecoverable": (
+        "<|channel|>final<|message|>Partial ans<|end|><|channel|>final<|message|>more"
+    ),
+    # H: a body carrying a control token the model wrote as text. `<|constrain|>`
+    # survives inside a message and reaches the reasoning verbatim, where
+    # re-encoding it to count tokens used to raise after the turn had finished.
+    "control_text_in_reasoning": (
+        "<|channel|>analysis<|message|>I will emit <|constrain|>json now.<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>Done.<|return|>"
+    ),
+    # I: the observed incident -- the generation began with prose and never
+    # opened a message, so reasoning, a terminator and a real tool-call header
+    # all landed in one header.
+    "never_opened": (
+        " after 2 line changes this is still incorrect. Now a better approach:\n\n"
+        "<|end|><|start|>assistant to=functions.exec_command <|constrain|>json"
+        '<|message|>{"cmd":"ls"}<|call|>'
+    ),
+    # J: a call Harmony accepts with no channel at all -- it parses, then routes
+    # nowhere, so the whole call used to vanish in silence.
+    "channel_less_call": ' to=functions.exec_command<|message|>{"cmd":"ls"}<|call|>',
+    # J': prose with its first words swallowed into the recipient/content-type
+    # fields. Parses, routes nowhere, whole message used to vanish.
+    "channel_less_prose": (
+        "Sure thing<|message|> — I looked and everything is fine.<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>All good.<|return|>"
+    ),
+    # K: the third live incident. Role, prose, a boundary, a noise word, the
+    # recipient, a content type. The turn died on the noise word `!~~~!css`
+    # sitting where an author would go, and took the `update_plan` call with it.
+    "update_plan_incident": (
+        "assistant based on the earlier instructions, let me summarise:"
+        "<|end|>!~~~!css to=functions.update_plan json"
+        '<|message|>{"summary":"The race condition bug has been fully fixed."}<|call|>'
+    ),
+    # G'': the same failure, reached while a tool call is still being written.
+    "unrecoverable_mid_call": (
+        "<|channel|>commentary to=functions.exec_command <|constrain|>json"
+        '<|message|>{"cmd":"rm -rf /tmp/x"<|end|><|channel|>final<|message|>more'
+    ),
 }
 
 
@@ -210,6 +261,7 @@ class Loaded:
     served_name: str
     quantization: str = "mxfp4-4bit"
     context_length: int = 131072
+    adapter: object | None = None
 
 
 class ScriptedEngine:
@@ -230,7 +282,7 @@ class ScriptedEngine:
         self.stop_marker: str | None = "<|return|>"
         self.explode: str | None = None
 
-    async def load(self, path, served_name, context_length):  # noqa: ANN001
+    async def load(self, path, served_name, context_length, *, adapter_path=None):  # noqa: ANN001
         self.state = EngineState.READY
         return Loaded(served_name=served_name, context_length=context_length)
 
@@ -477,3 +529,108 @@ def test_the_record_of_a_rejected_turn_carries_no_model_output(daemon, engine) -
         "empty_completion_detected",
     ):
         assert key in payload
+
+
+
+
+# -- non-conformant generation, on both paths --------------------------------
+#
+# Each of these is a real emission observed against this server. They were once
+# repaired; a repaired turn ends as COMPLETED, which hides the defect from
+# whoever is judging the model. On a native Codex backend they are reported.
+
+
+#: Shapes that must be refused. `unrecoverable_mid_call` is here too: it dies
+#: while a tool call is open, which is the case that must not announce the call
+#: as complete on the way out.
+MALFORMED_CASES = [
+    "malformed_header",
+    "never_opened",
+    "channel_less_call",
+    "channel_less_prose",
+    "update_plan_incident",
+    "unrecoverable",
+    "unrecoverable_mid_call",
+]
+
+
+@pytest.mark.parametrize("case", MALFORMED_CASES)
+def test_non_conformant_generation_is_reported_not_repaired(daemon, engine, case: str) -> None:
+    """A stable code on both paths, and never an unhandled 500.
+
+    Before this, the non-streaming path let the parser's own error escape as a
+    500 with a traceback, and the streaming path put the raw Rust message on
+    the wire. Neither told a client anything it could act on.
+    """
+    engine.tokens = harmony_tokens(case)
+
+    plain = ask(daemon, stream=False)
+    assert plain.status_code != 500, plain.text
+    assert plain.json()["error"]["code"] == app_module.MALFORMED_GENERATION_CODE
+    # The model's broken output is a server-side diagnostic, not wire content.
+    assert plain.json()["error"]["message"] == app_module.MALFORMED_GENERATION
+    record = latest(daemon)
+    assert record.outcome is Outcome.FAILED
+    assert record.malformed_generation, "the shape must be recorded to be countable"
+
+    streamed = ask(daemon, stream=True)
+    frames = events(streamed)
+    kinds = [event["type"] for event in frames]
+    assert "response.completed" not in kinds
+    failure = next(event for event in frames if event["type"] == "response.failed")
+    assert failure["response"]["error"]["code"] == app_module.MALFORMED_GENERATION_CODE
+    assert failure["response"]["error"]["message"] == app_module.MALFORMED_GENERATION
+    assert latest(daemon).malformed_generation
+
+
+def test_the_offending_header_is_recorded_but_never_sent(daemon, engine) -> None:
+    """The header is what diagnoses the emission; it belongs in the record.
+
+    Every incident this session was identified from that text alone -- and none
+    of it belongs on the wire, where it would only hand a client the model's
+    own broken output.
+    """
+    engine.tokens = harmony_tokens("update_plan_incident")
+
+    streamed = ask(daemon, stream=True)
+
+    record = latest(daemon)
+    assert record.malformed_header
+    assert "update_plan" in record.malformed_header
+    assert "update_plan" not in streamed.text
+
+
+def test_reasoning_that_parsed_before_the_malformation_still_reaches_the_client(
+    daemon, engine
+) -> None:
+    """Strict is not the same as discarding what was already valid."""
+    engine.tokens = harmony_tokens("malformed_header")
+
+    streamed = ask(daemon, stream=True)
+
+    frames = events(streamed)
+    done = [event["item"] for event in frames if event["type"] == "response.output_item.done"]
+    assert [item["type"] for item in done] == ["reasoning"]
+    assert "I need to look." in done[0]["content"][0]["text"]
+    # An unfinished tool call is never announced as ready to dispatch.
+    assert all(item["type"] != "function_call" for item in done)
+
+
+def test_control_token_text_in_reasoning_still_completes(daemon, engine) -> None:
+    """Legal Harmony that merely contains `<|…|>` as *text* is not malformed.
+
+    The model writes literal control-token text into its own reasoning -- seen
+    in the rollouts quoting its own tool-call syntax. Harmony parses it; only
+    the server's re-encoding used to fail, after the turn had already produced
+    its answer. That fix is kept, and strictness must not swallow it.
+    """
+    engine.tokens = harmony_tokens("control_text_in_reasoning")
+
+    plain = ask(daemon, stream=False)
+    assert plain.status_code == 200, plain.text
+    assert plain.json()["output"][-1]["content"][0]["text"] == "Done."
+    assert latest(daemon).outcome is Outcome.COMPLETED
+    assert latest(daemon).malformed_generation is None
+
+    streamed = ask(daemon, stream=True)
+    assert "response.completed" in [event["type"] for event in events(streamed)]

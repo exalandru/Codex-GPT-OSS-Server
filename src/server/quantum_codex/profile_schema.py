@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .canonical import ReasoningEffort
@@ -240,6 +241,27 @@ MODEL_FIELDS: list[Field] = [
         restart_required=True,
     ),
     Field(
+        name="adapter_path",
+        label="LoRA adapter",
+        kind="path",
+        # Advanced rather than expert: someone who trained a LoRA understands
+        # its effect better than anyone. What they need is "worth setting once
+        # the basics work", not a warning about a knob whose effect is diffuse.
+        group="advanced",
+        help=(
+            "Optional directory holding a LoRA adapter trained against this model: "
+            "adapter_config.json and adapters.safetensors, as `mlx_lm.lora` writes "
+            "them. Leave empty to serve the base weights. An adapter that matches "
+            "none of these weights is refused at load rather than applied to nothing."
+        ),
+        nullable=True,
+        restart_required=True,
+        caution=(
+            "The adapter changes what the model answers. Nothing in a served name or "
+            "in a generated Codex configuration says one is applied."
+        ),
+    ),
+    Field(
         name="max_output_tokens",
         label="Maximum output",
         kind="integer",
@@ -379,6 +401,17 @@ def coerce_in(fields: Sequence[Field], name: str, raw: Any) -> Any:
         return int(raw)
     if definition.kind == "number":
         return float(raw)
+    if definition.kind == "path":
+        # Expanded where it is stored, like every other path this server keeps
+        # (the registry, the scan roots, the download location). A `~` that
+        # survives into the settings file is a path only a shell can resolve,
+        # and nothing that later reads it is a shell.
+        #
+        # Not `resolve()`: it collapses symlinks, and both `/Volumes` and the
+        # application-support tree are full of them on macOS. The registry
+        # stores expanded-but-unresolved paths, and these have to compare equal
+        # to what a user sees in Finder.
+        return str(Path(str(raw).strip()).expanduser())
     return str(raw).strip()
 
 
@@ -421,6 +454,19 @@ def validate_in(fields: Sequence[Field], values: dict[str, Any]) -> list[Validat
                     definition.name,
                     definition.pattern_message
                     or f"{definition.label} has an unusable value",
+                )
+            )
+            continue
+
+        if definition.kind == "path" and not Path(str(value)).is_absolute():
+            # A relative path would be resolved against the *daemon's* working
+            # directory, which is not the one the user typed it in.
+            problems.append(
+                ValidationProblem(
+                    definition.name,
+                    f"{definition.label} must be an absolute path: a relative one "
+                    "would be resolved against the server's working directory, "
+                    "not yours",
                 )
             )
             continue

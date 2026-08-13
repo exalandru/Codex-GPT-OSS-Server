@@ -9,7 +9,15 @@ for channels, recipients and namespaces; using them is what makes reasoning
 continuity and tool calling correct rather than approximately correct.
 """
 
-from .parse import ANALYSIS, COMMENTARY, FINAL, ParsedGeneration, StreamingParser, parse_completion
+from .parse import (
+    ANALYSIS,
+    COMMENTARY,
+    FINAL,
+    MalformedGeneration,
+    ParsedGeneration,
+    StreamingParser,
+    parse_completion,
+)
 from .render import HarmonyRenderer
 
 __all__ = [
@@ -18,6 +26,7 @@ __all__ = [
     "FINAL",
     "HarmonyRenderer",
     "ParsedGeneration",
+    "MalformedGeneration",
     "StreamingParser",
     "parse_completion",
 ]

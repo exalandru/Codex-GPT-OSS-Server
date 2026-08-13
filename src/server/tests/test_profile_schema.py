@@ -170,3 +170,46 @@ def test_a_null_in_a_required_field_is_not() -> None:
 
     assert len(problems) == 1
     assert "required" in problems[0].message
+
+
+# -- paths -------------------------------------------------------------------
+#
+# `path` was a declared kind with no behaviour behind it until an adapter
+# directory needed one. Both rules below exist because the value is read by the
+# daemon, in a process the user is not standing in.
+
+
+def test_a_path_setting_needs_a_restart_to_take_effect() -> None:
+    """It decides which weights are loaded, so a running daemon cannot honour it."""
+    restart = {field.name for field in MODEL_FIELDS if field.restart_required}
+
+    assert "adapter_path" in restart
+
+
+def test_a_tilde_is_expanded_where_a_path_is_stored() -> None:
+    # Nothing that later reads this setting is a shell, so a `~` surviving into
+    # the settings file is a path only a shell could resolve.
+    import os
+
+    stored = coerce_model("adapter_path", "~/adapters/style-fr")
+
+    assert stored == os.path.expanduser("~/adapters/style-fr")
+    assert "~" not in stored
+
+
+def test_an_absolute_path_is_left_exactly_as_it_is() -> None:
+    # No `resolve()`: it collapses symlinks, and `/Volumes` is full of them.
+    assert coerce_model("adapter_path", "/Volumes/Weights/adapter") == "/Volumes/Weights/adapter"
+
+
+def test_a_relative_path_is_refused_because_the_daemon_has_its_own_directory() -> None:
+    problems = validate_model({"adapter_path": "adapters/style-fr"})
+
+    assert len(problems) == 1
+    assert "absolute" in problems[0].message
+
+
+def test_clearing_a_path_setting_is_not_a_relative_path() -> None:
+    # Empty means "no adapter", and it must not be caught by the rule above.
+    assert coerce_model("adapter_path", "") is None
+    assert validate_model({"adapter_path": None}) == []

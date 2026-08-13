@@ -443,3 +443,78 @@ def test_a_display_override_beats_the_catalogue_name() -> None:
     resolved = {m.id: m for m in served_models_from_library(BOTH, overrides=settings.overrides)}
 
     assert resolved["gpt-oss-20b"].display_name == "Fast local 20B"
+
+
+# -- adapters ----------------------------------------------------------------
+#
+# An adapter is part of *which weights these are*, so it resolves like any other
+# per-model setting and reaches `ServedModel` beside the path.
+
+
+def test_an_adapter_path_reaches_the_served_model() -> None:
+    settings = ModelSettings()
+    settings.set("gpt-oss-20b", {"adapter_path": "/adapters/style-fr"})
+
+    resolved = {m.id: m for m in served_models_from_library(BOTH, overrides=settings.overrides)}
+
+    assert resolved["gpt-oss-20b"].adapter_path == "/adapters/style-fr"
+    assert resolved["gpt-oss-120b"].adapter_path is None
+
+
+def test_no_adapter_is_the_clean_default_for_both_presets() -> None:
+    """Nothing ships an adapter, and absence here means the base weights."""
+    for model in served_models_from_library(BOTH):
+        assert model.adapter_path is None
+
+
+def test_an_empty_adapter_path_means_base_weights_and_not_the_current_directory() -> None:
+    """`Path("")` is the working directory, which MLX would try to load.
+
+    Reachable by hand-editing model-settings.json, so the resolution refuses to
+    turn a blank into a value rather than trusting the write boundary.
+    """
+    resolved = served_models_from_library(
+        BOTH, overrides={"gpt-oss-20b": {"adapter_path": "   "}}
+    )
+
+    assert {m.adapter_path for m in resolved} == {None}
+
+
+def test_two_models_hold_different_adapters_at_once() -> None:
+    settings = ModelSettings()
+    settings.set("gpt-oss-20b", {"adapter_path": "/adapters/small"})
+    settings.set("gpt-oss-120b", {"adapter_path": "/adapters/large"})
+
+    resolved = {m.id: m for m in served_models_from_library(BOTH, overrides=settings.overrides)}
+
+    assert resolved["gpt-oss-20b"].adapter_path == "/adapters/small"
+    assert resolved["gpt-oss-120b"].adapter_path == "/adapters/large"
+
+
+def test_clearing_the_adapter_returns_the_model_to_its_base_weights() -> None:
+    settings = ModelSettings()
+    settings.set("gpt-oss-20b", {"adapter_path": "/adapters/style-fr"})
+    settings.set("gpt-oss-20b", {"adapter_path": None})
+
+    resolved = {m.id: m for m in served_models_from_library(BOTH, overrides=settings.overrides)}
+
+    assert resolved["gpt-oss-20b"].adapter_path is None
+    # Cleared, not stored as null: a persisted null would be a value.
+    assert "adapter_path" not in settings.for_model("gpt-oss-20b")
+
+
+def test_the_adapter_is_part_of_the_load_identity_and_the_name_is_not() -> None:
+    """What decides which weights answer, as one expression.
+
+    The slug is what a request asks for; the identity is what must match for the
+    resident weights to be the ones it asked for. Two models differing only by
+    adapter share every name they have.
+    """
+    plain = served_models_from_library(BOTH)[0]
+    adapted = served_models_from_library(
+        BOTH, overrides={"gpt-oss-20b": {"adapter_path": "/adapters/style-fr"}}
+    )[0]
+
+    assert plain.slug == adapted.slug
+    assert plain.display_name == adapted.display_name
+    assert plain.load_identity != adapted.load_identity

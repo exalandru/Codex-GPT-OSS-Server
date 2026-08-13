@@ -459,6 +459,7 @@ export function Setting({
   serverRunning,
   onChange,
   inherited = false,
+  browse,
 }: {
   field: api.SchemaField;
   value: string;
@@ -467,7 +468,17 @@ export function Setting({
   /** The value shown came from the backend, not from this user. Rendered
    *  quieter so a default is visibly not a choice someone made. */
   inherited?: boolean;
+  /** A native picker for a `path` field. Supplied by the caller rather than
+   *  chosen here: which directory is being asked for, and under what title, is
+   *  the caller's business — this component only renders what it is given. */
+  browse?: { label: string; run: () => Promise<string | null> };
 }) {
+  async function choose() {
+    const chosen = await browse?.run();
+    // A cancelled picker changes nothing, and must not clear what is typed.
+    if (chosen) onChange(chosen);
+  }
+
   return (
     <div className={inherited ? "setting setting-inherited" : "setting"}>
       <label className="setting-label" htmlFor={field.name}>
@@ -513,6 +524,16 @@ export function Setting({
           placeholder={field.nullable ? "inherit" : ""}
           onChange={(event) => onChange(event.target.value)}
         />
+      )}
+
+      {/* Beside the field rather than instead of it: a path can be typed or
+          pasted, and the picker is the convenience. Rendered only when the
+          caller supplied one, so a `path` field with no picker still works. */}
+      {field.kind === "path" && browse && (
+        <div className="actions">
+          <button onClick={() => void choose()}>{browse.label}</button>
+          {value && <button onClick={() => onChange("")}>Clear</button>}
+        </div>
       )}
 
       <p className="setting-help">{field.help}</p>

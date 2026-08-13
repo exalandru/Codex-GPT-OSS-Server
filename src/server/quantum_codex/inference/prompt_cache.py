@@ -120,6 +120,13 @@ class ModelIdentity:
     served_name: str
     path: str
     generation: int
+    #: The LoRA adapter applied to those weights, when there is one. Redundant
+    #: with ``generation`` today, because changing an adapter forces a reload
+    #: and every load increments it -- but that redundancy is a property of a
+    #: different module, and this one is where the compatibility rule lives. An
+    #: adapter changes the weights, so it changes both the KV state and the
+    #: logits computed by replaying it.
+    adapter: str | None = None
 
     def __str__(self) -> str:
         return f"{self.served_name}@{self.generation}"

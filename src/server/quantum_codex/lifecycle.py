@@ -120,14 +120,23 @@ _FROM_ENGINE: dict[EngineState, LifecycleState] = {
 class ModelBusyError(RuntimeError):
     """A different model is in use and cannot be swapped out yet."""
 
-    def __init__(self, requested: str, current: str, in_flight: int) -> None:
+    def __init__(
+        self, requested: str, current: str, in_flight: int, detail: str | None = None
+    ) -> None:
+        # `detail` exists because two models can now differ while sharing a
+        # name: the same slug with a different adapter is different weights.
+        # Without it the message reads "`gpt-oss-120b` is serving 1 request(s);
+        # `gpt-oss-120b` cannot be loaded", which explains nothing.
         super().__init__(
-            f"Model `{current}` is serving {in_flight} request(s); `{requested}` cannot be "
-            f"loaded until they finish. Retry shortly, or use one model per session."
+            f"Model `{current}` is serving {in_flight} request(s); `{requested}`"
+            + (f" {detail}" if detail else "")
+            + " cannot be loaded until they finish. Retry shortly, or use one "
+            "model per session."
         )
         self.requested = requested
         self.current = current
         self.in_flight = in_flight
+        self.detail = detail
 
 
 class ModelInUseError(RuntimeError):
@@ -147,6 +156,26 @@ class ModelInUseError(RuntimeError):
         )
         self.current = current
         self.in_flight = in_flight
+
+
+def _differs_by(current: ServedModel, requested: ServedModel) -> str | None:
+    """Why these two are not the same weights, in words, or ``None``.
+
+    Only reached when the load identities already differ, so this names the
+    difference rather than deciding whether there is one. A plain model switch
+    needs no explanation — the two slugs are right there in the message — and
+    returns ``None``; the cases that share a name are the ones a user cannot
+    otherwise account for.
+    """
+    if current.slug != requested.slug or current.library_id != requested.library_id:
+        return None
+    if current.adapter_path != requested.adapter_path:
+        return "with a different LoRA adapter"
+    if current.context_window != requested.context_window:
+        return "with a different context length"
+    if current.path != requested.path:
+        return "from a different directory"
+    return None
 
 
 @dataclass(frozen=True)
@@ -321,13 +350,28 @@ class ModelSupervisor:
             self._disarm_idle_timer()
 
             try:
-                if self._current is not None and self._current.slug != model.slug:
+                # `load_identity`, not `slug`: the slug is the name a request
+                # asked for, and the identity is what decides which weights
+                # answer it. A model whose adapter changed keeps its name and is
+                # not the resident model any more.
+                if (
+                    self._current is not None
+                    and self._current.load_identity != model.load_identity
+                ):
+                    difference = _differs_by(self._current, model)
                     if self._in_flight > 0:
-                        raise ModelBusyError(model.slug, self._current.slug, self._in_flight)
-                    logger.info("Switching model %s -> %s", self._current.slug, model.slug)
+                        raise ModelBusyError(
+                            model.slug, self._current.slug, self._in_flight, detail=difference
+                        )
+                    logger.info(
+                        "Switching model %s -> %s%s",
+                        self._current.slug,
+                        model.slug,
+                        f" ({difference})" if difference else "",
+                    )
                     self._unload_reason = UnloadReason.MODEL_SWITCH
 
-                if self._current is None or self._current.slug != model.slug:
+                if self._current is None or self._current.load_identity != model.load_identity:
                     await self._load(model)
             except BaseException:
                 # The lease was never taken, so the ``finally`` below -- the only
@@ -358,7 +402,16 @@ class ModelSupervisor:
             raise ModelBusyError(model.slug, model.slug, 0)
         self._error = None
         try:
-            loaded = await self._engine.load(model.path, model.slug, model.context_window)
+            # `adapter_path` is passed unconditionally, including when it is
+            # `None`. Passing it only when set would leave every engine double
+            # in the tests green while the adapter never reached the real
+            # engine, which is the one failure this wiring cannot afford.
+            loaded = await self._engine.load(
+                model.path,
+                model.slug,
+                model.context_window,
+                adapter_path=model.adapter_path,
+            )
         except BaseException as exc:
             # ``BaseException``, not ``Exception``: a cancelled await must leave
             # the same bookkeeping behind as a failed one. It used to escape
@@ -384,10 +437,14 @@ class ModelSupervisor:
         self._state_since = time.perf_counter()
         self._epoch += 1
         logger.info(
-            "Model %s resident (%s, %d ctx)",
+            "Model %s resident (%s, %d ctx%s)",
             loaded.served_name,
             loaded.quantization or "unquantized",
             loaded.context_length,
+            ""
+            if loaded.adapter is None
+            else f", {loaded.adapter.applied_tensors}/"
+            f"{loaded.adapter.adapter_tensors} adapter tensors",
         )
 
     # -- releasing ------------------------------------------------------------

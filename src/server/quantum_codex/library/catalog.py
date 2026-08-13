@@ -58,7 +58,7 @@ class CatalogEntry:
 #: The supported set. mxfp4 because that is what GPT-OSS ships as and what the
 #: engine has been measured against; another quantisation is a different model
 #: as far as this product is concerned.
-#: Per-model settings the presets deliberately leave to the server default.
+#: Per-model settings the presets ship with no opinion about.
 #:
 #: Stated rather than omitted, so "no catalogue default" is visibly a decision:
 #:
@@ -66,10 +66,20 @@ class CatalogEntry:
 #:                        remains of the context window anyway.
 #: ``temperature``        GPT-OSS is used here for coding, where the useful
 #: ``top_p``              value does not differ by model size.
+#: ``adapter_path``       no adapter ships with either preset, and the product
+#:                        cannot know where a user's would live. Note that
+#:                        absence here means *no adapter at all* rather than an
+#:                        inherited value: unlike the three above, there is no
+#:                        server-wide default behind it.
 #:
 #: A user may still override any of them per model; this is only about what is
 #: shipped.
-DEFAULTS_INHERITED: tuple[str, ...] = ("max_output_tokens", "temperature", "top_p")
+DEFAULTS_INHERITED: tuple[str, ...] = (
+    "max_output_tokens",
+    "temperature",
+    "top_p",
+    "adapter_path",
+)
 
 SUPPORTED: tuple[CatalogEntry, ...] = (
     CatalogEntry(
@@ -207,5 +217,14 @@ def merge(
             claimed[item["served_name"]] = claimed.get(item["served_name"], 0) + 1
     for item in merged:
         item["served_conflict"] = contends(item) and claimed[item["served_name"]] > 1
+
+    # Whether modified weights answer for this model. A card that showed only
+    # the model's name would be identical whether or not a LoRA was configured,
+    # and a user comparing two answers would have nothing to attribute the
+    # difference to. This is the *configured* adapter: what is actually applied
+    # is measured at load and reported by the daemon's status.
+    for item in merged:
+        stored = (overrides or {}).get(item["id"], {})
+        item["adapter_path"] = stored.get("adapter_path") or None
 
     return merged

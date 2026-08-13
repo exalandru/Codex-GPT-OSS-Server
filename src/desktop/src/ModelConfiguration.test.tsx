@@ -473,3 +473,167 @@ describe("the dialog as a dialog", () => {
     expect((field as HTMLInputElement).value).toBe("codex-local");
   });
 });
+
+/** A LoRA adapter is a directory, and a directory needs a native picker.
+ *
+ * The dialog stays schema-driven: it renders a picker because the server said
+ * the field is a path, not because it knows what an adapter is. What it does
+ * know is which picker to open and what to call the button — that is the one
+ * judgement a schema cannot carry.
+ */
+describe("the adapter path", () => {
+  const WITH_PATH = {
+    ...MODEL_SCHEMA,
+    fields: [
+      ...MODEL_SCHEMA.fields,
+      {
+        name: "adapter_path",
+        label: "LoRA adapter",
+        kind: "path",
+        group: "advanced",
+        help: "",
+        nullable: true,
+        restart_required: true,
+      },
+    ],
+  };
+
+  function withPicker(chosen: string | null, stored: Record<string, unknown> = {}) {
+    const calls: { command: string; args?: unknown }[] = [];
+    mocked.mockImplementation(async (command: string, args?: unknown) => {
+      calls.push({ command, args });
+      if (command === "model_config_schema") return WITH_PATH;
+      if (command === "model_config")
+        return {
+          model: "gpt-oss-20b",
+          settings: stored,
+          defaults: {},
+          effective: stored,
+          inherited: [],
+        };
+      if (command === "choose_adapter_directory") return chosen;
+      return { message: "ok" };
+    });
+    return calls;
+  }
+
+  it("offers a picker for a path field and writes what was chosen into the form", async () => {
+    withPicker("/Volumes/Weights/adapters/style-fr");
+    render(<ModelConfiguration slug="gpt-oss-20b" displayName="GPT-OSS 20B" onClose={() => {}} />);
+    await screen.findByLabelText(/served as/i);
+
+    await userEvent.click(screen.getByRole("button", { name: /choose lora adapter/i }));
+
+    await waitFor(() =>
+      expect((screen.getByLabelText(/lora adapter/i) as HTMLInputElement).value).toBe(
+        "/Volumes/Weights/adapters/style-fr",
+      ),
+    );
+  });
+
+  it("asks the adapter picker, not the model-directory one", async () => {
+    // Two pickers exist and differ only by their title, which is the only thing
+    // telling the user which kind of directory this dialog wants.
+    const calls = withPicker("/Volumes/Weights/adapters/style-fr");
+    render(<ModelConfiguration slug="gpt-oss-20b" displayName="GPT-OSS 20B" onClose={() => {}} />);
+    await screen.findByLabelText(/served as/i);
+
+    await userEvent.click(screen.getByRole("button", { name: /choose lora adapter/i }));
+
+    expect(calls.some((c) => c.command === "choose_adapter_directory")).toBe(true);
+    expect(calls.some((c) => c.command === "choose_model_directory")).toBe(false);
+  });
+
+  it("leaves the field alone when the picker is cancelled", async () => {
+    // A cancelled picker changes nothing. Clearing what was typed would lose
+    // work in response to a decision not to change anything.
+    withPicker(null, { adapter_path: "/Volumes/Weights/adapters/existing" });
+    render(<ModelConfiguration slug="gpt-oss-20b" displayName="GPT-OSS 20B" onClose={() => {}} />);
+    const field = (await screen.findByLabelText(/lora adapter/i)) as HTMLInputElement;
+
+    await userEvent.click(screen.getByRole("button", { name: /choose lora adapter/i }));
+
+    expect(field.value).toBe("/Volumes/Weights/adapters/existing");
+  });
+
+  it("sends the chosen path to the server as an assignment", async () => {
+    withPicker("/Volumes/Weights/adapters/style-fr");
+    render(<ModelConfiguration slug="gpt-oss-20b" displayName="GPT-OSS 20B" onClose={() => {}} />);
+    await screen.findByLabelText(/served as/i);
+    await userEvent.click(screen.getByRole("button", { name: /choose lora adapter/i }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mocked).toHaveBeenCalledWith("set_model_config", {
+      slug: "gpt-oss-20b",
+      assignments: ["adapter_path=/Volumes/Weights/adapters/style-fr"],
+    });
+  });
+
+  it("clears the adapter with an empty assignment", async () => {
+    // Empty means "the base weights", and it is how an override is removed.
+    withPicker(null, { adapter_path: "/Volumes/Weights/adapters/existing" });
+    render(<ModelConfiguration slug="gpt-oss-20b" displayName="GPT-OSS 20B" onClose={() => {}} />);
+    await screen.findByLabelText(/lora adapter/i);
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(mocked).toHaveBeenCalledWith("set_model_config", {
+      slug: "gpt-oss-20b",
+      assignments: ["adapter_path="],
+    });
+  });
+
+  it("says a restart is needed when the server is already running", async () => {
+    // The adapter is chosen at load, so a running daemon cannot honour it. A
+    // save that said only "Saved" would read as one that had taken effect.
+    withPicker("/Volumes/Weights/adapters/style-fr");
+    const onSaved = vi.fn();
+    render(
+      <ModelConfiguration
+        slug="gpt-oss-20b"
+        displayName="GPT-OSS 20B"
+        serverRunning
+        onClose={() => {}}
+        onSaved={onSaved}
+      />,
+    );
+    await screen.findByLabelText(/served as/i);
+    await userEvent.click(screen.getByRole("button", { name: /choose lora adapter/i }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSaved).toHaveBeenCalledWith(expect.stringMatching(/after a restart/i));
+    expect(onSaved).toHaveBeenCalledWith(expect.stringMatching(/LoRA adapter/));
+  });
+
+  it("promises no restart when no server is running to need one", async () => {
+    withPicker("/Volumes/Weights/adapters/style-fr");
+    const onSaved = vi.fn();
+    render(
+      <ModelConfiguration
+        slug="gpt-oss-20b"
+        displayName="GPT-OSS 20B"
+        onClose={() => {}}
+        onSaved={onSaved}
+      />,
+    );
+    await screen.findByLabelText(/served as/i);
+    await userEvent.click(screen.getByRole("button", { name: /choose lora adapter/i }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSaved).toHaveBeenCalledWith("Saved GPT-OSS 20B.");
+  });
+
+  it("offers no picker for the fields that are not paths", async () => {
+    // The control follows the declared kind, not the field's name.
+    withPicker(null);
+    render(<ModelConfiguration slug="gpt-oss-20b" displayName="GPT-OSS 20B" onClose={() => {}} />);
+    await screen.findByLabelText(/served as/i);
+
+    expect(screen.queryByRole("button", { name: /choose served as/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /choose context length/i })).toBeNull();
+  });
+});

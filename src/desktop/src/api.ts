@@ -138,6 +138,9 @@ export const importModelFor = (path: string, expect: string) =>
   invoke<unknown>("import_model_for", { path, expect });
 export const forgetModel = (path: string) => invoke<unknown>("forget_model", { path });
 export const chooseModelDirectory = () => invoke<string | null>("choose_model_directory");
+/** The same native picker under a different title. Separate because the title
+ *  is the only thing telling a user which kind of directory is wanted. */
+export const chooseAdapterDirectory = () => invoke<string | null>("choose_adapter_directory");
 export const revealInFinder = (path: string) => invoke<void>("reveal_in_finder", { path });
 
 // -- profiles ---------------------------------------------------------------

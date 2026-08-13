@@ -542,3 +542,66 @@ describe("values long enough to break a layout", () => {
     expect(panel.getAllByText(LONG_NAME)).toHaveLength(1);
   });
 });
+
+/** What is applied, not what was asked for.
+ *
+ * The Models tab shows the adapter a model is *configured* with. This row shows
+ * what reached the weights that are answering right now, which is the only
+ * place the two can be told apart — an adapter trained against another model
+ * loads without error and applies to nothing.
+ */
+describe("a resident LoRA adapter", () => {
+  const withAdapter = (over: Record<string, unknown>) =>
+    statusPayload({
+      model: {
+        served_name: "gpt-oss-120b",
+        path: "/Volumes/Weights/mlx/gpt-oss-120b-mxfp4-bf16",
+        quantization: "mxfp4-4bit",
+        context_length: 131072,
+        layers: 36,
+        adapter: over,
+      },
+    });
+
+  it("reports how much of the adapter reached the weights", async () => {
+    daemon({
+      status: withAdapter({
+        path: "/Volumes/Weights/adapters/style-fr",
+        fine_tune_type: "lora",
+        applied_tensors: 256,
+        adapter_tensors: 256,
+      }),
+    });
+    render(<App />);
+
+    const card = await session();
+    expect(within(card).getByText(/lora adapter/i)).toBeTruthy();
+    expect(within(card).getByText(/256\/256 tensors applied/)).toBeTruthy();
+  });
+
+  it("shows a partial application as the partial thing it is", async () => {
+    // Legitimate — an adapter trained over fewer blocks than the model has —
+    // and the figure is the only thing that distinguishes it from a full one.
+    daemon({
+      status: withAdapter({
+        path: "/Volumes/Weights/adapters/style-fr",
+        fine_tune_type: "lora",
+        applied_tensors: 64,
+        adapter_tensors: 256,
+      }),
+    });
+    render(<App />);
+
+    const card = await session();
+    expect(within(card).getByText(/64\/256 tensors applied/)).toBeTruthy();
+  });
+
+  it("says nothing at all when the base weights are serving", async () => {
+    daemon();
+    render(<App />);
+
+    const card = await session();
+    await within(card).findByText(/served as/i);
+    expect(within(card).queryByText(/lora adapter/i)).toBeNull();
+  });
+});

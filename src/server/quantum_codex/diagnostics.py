@@ -102,6 +102,13 @@ class RequestRecord:
     had_tool_call: bool = False
     had_final_output: bool = False
     empty_completion_detected: bool = False
+    #: Set when the model emitted Harmony the server does not accept, with the
+    #: shape and a bounded excerpt of the offending header. This is the
+    #: measurement that replaced the repair layer: a conformant model reads
+    #: zero across a session, and a non-zero count names the exact emission to
+    #: take back to training rather than leaving a repaired turn looking clean.
+    malformed_generation: str | None = None
+    malformed_header: str | None = None
     #: Reserved diagnostics for an explicitly designed recovery mechanism. QCS
     #: currently fails closed instead of silently continuing a model turn.
     recovery_attempted: bool = False
@@ -203,6 +210,8 @@ class RequestRecord:
             "had_tool_call": self.had_tool_call,
             "had_final_output": self.had_final_output,
             "empty_completion_detected": self.empty_completion_detected,
+            "malformed_generation": self.malformed_generation,
+            "malformed_header": self.malformed_header,
             "recovery_attempted": self.recovery_attempted,
             "recovery_outcome": self.recovery_outcome,
             "termination": self.termination,

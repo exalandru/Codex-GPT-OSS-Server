@@ -184,6 +184,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inspect_cmd.add_argument("path")
     inspect_cmd.add_argument("--json", action="store_true", help="Emit raw JSON")
+    inspect_adapter_cmd = models.add_parser(
+        "inspect-adapter",
+        help="Check whether a directory is a LoRA adapter this server can apply",
+    )
+    inspect_adapter_cmd.add_argument("path")
+    inspect_adapter_cmd.add_argument("--json", action="store_true", help="Emit raw JSON")
 
     requests = subcommands.add_parser("requests", help="Recent request diagnostics")
     requests.add_argument("--json", action="store_true", help="Emit raw JSON")
@@ -414,6 +420,15 @@ def _cmd_status(args: argparse.Namespace) -> int:
     if model:
         print(f"model       {model['served_name']}  {model['quantization']}")
         print(f"            {model['path']}")
+        adapter = model.get("adapter")
+        if adapter:
+            # The applied counts, not the configured path: this line exists to
+            # distinguish an adapter that took effect from one that did not.
+            print(
+                f"adapter     {adapter['fine_tune_type']}, "
+                f"{adapter['applied_tensors']}/{adapter['adapter_tensors']} tensors applied"
+            )
+            print(f"            {adapter['path']}")
 
     lifecycle = payload.get("lifecycle") or {}
     # Printed whether or not a model is resident: "no model loaded, released
@@ -469,6 +484,8 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
     """
     import copy
 
+    from .inspect_adapter import describes_the_same_model, inspect_adapter
+    from .library import volume_for
     from .library.catalog import defaults_for, display_name_for
     from .library.registry import load_registry
     from .model_settings import ModelSettings, load_model_settings, save_model_settings
@@ -520,6 +537,34 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
         problems = validate_model({k: v for k, v in values.items() if v is not None})
         if problems:
             raise ConfigError("; ".join(f"{p.field}: {p.message}" for p in problems))
+
+        # Refuse what is provably wrong; store and report what is merely
+        # currently unreachable.
+        #
+        # A directory the user just chose is refused here, the way an
+        # unreadable model directory is refused at import, because saying why
+        # is the whole value of validating at the boundary. But an adapter on
+        # an unmounted volume is a normal situation -- the drive is on the desk
+        # -- and refusing it would make the setting not only unstorable but
+        # *unclearable*, since clearing arrives through this same path.
+        #
+        # Only the value being written now is inspected. Re-inspecting a stored
+        # adapter would let one model's unplugged drive block an unrelated edit.
+        chosen_adapter = values.get("adapter_path")
+        if isinstance(chosen_adapter, str) and chosen_adapter:
+            adapter = inspect_adapter(chosen_adapter)
+            if not adapter.usable and volume_for(chosen_adapter).mounted:
+                raise ConfigError(f"{chosen_adapter} cannot be used: {adapter.reasons[0]}")
+            if not describes_the_same_model(adapter, report.entry.path):
+                # A label, so it is a note and not a refusal. The authority on
+                # whether an adapter fits is the engine's witness, which
+                # compares tensor names against the weights themselves.
+                print(
+                    f"note: this adapter records {adapter.trained_against!r} as the model "
+                    f"it was trained against, which is not {report.entry.name!r}. If they "
+                    "really differ, the load will refuse it.",
+                    file=sys.stderr,
+                )
 
         candidate = ModelSettings(overrides=copy.deepcopy(settings.overrides))
         candidate.set(model_id, values)
@@ -579,6 +624,18 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
     )
     effective = {**defaults, **current}
 
+    # `adapter_path` is a path, so what a form needs to show beside it is what
+    # is *at* that path right now -- "set, but the volume is not mounted" is the
+    # state a stored string alone cannot express. A sibling key rather than part
+    # of `effective`, because it is an observation about the world and not a
+    # setting anyone chose.
+    configured_adapter = effective.get("adapter_path")
+    adapter_state = (
+        inspect_adapter(configured_adapter).as_dict()
+        if isinstance(configured_adapter, str) and configured_adapter
+        else None
+    )
+
     if getattr(args, "json", False):
         print(
             json.dumps(
@@ -588,6 +645,7 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
                     "defaults": defaults,
                     "effective": effective,
                     "inherited": sorted(set(effective) - set(current)),
+                    "adapter": adapter_state,
                 },
                 indent=2,
             )
@@ -599,6 +657,11 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
         return 0
     for name in sorted(current):
         print(f"  {name:<20} {current[name]}")
+        # Directly under the path it describes, rather than at the end: printed
+        # last it would read as a continuation of whichever setting happened to
+        # sort there.
+        if name == "adapter_path" and adapter_state is not None:
+            print(f"  {'':<20} {adapter_state['verdict'].lower()}: {adapter_state['reasons'][0]}")
     return 0
 
 
@@ -836,6 +899,23 @@ def _cmd_models_inspect(args: argparse.Namespace) -> int:
             )
     # A non-zero exit lets a script gate on this without parsing the output.
     return 0 if report.verdict is not Verdict.UNSUPPORTED else 1
+
+
+def _cmd_models_inspect_adapter(args: argparse.Namespace) -> int:
+    from .inspect_adapter import inspect_adapter
+
+    report = inspect_adapter(args.path)
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+    else:
+        print(f"{report.verdict.value}  {report.path}")
+        for reason in report.reasons:
+            print(f"  - {reason}")
+        if report.trained_against:
+            print(f"  trained against {report.trained_against}")
+        if report.usable:
+            print(f"  {report.tensor_count} tensors, {_human_bytes(report.weight_bytes)}")
+    return 0 if report.usable else 1
 
 
 def _cmd_requests(args: argparse.Namespace) -> int:
@@ -1332,6 +1412,7 @@ _COMMANDS = {
     ("models", "config-schema"): _cmd_models_config_schema,
     ("models", "unload"): _cmd_models_unload,
     ("models", "inspect"): _cmd_models_inspect,
+    ("models", "inspect-adapter"): _cmd_models_inspect_adapter,
     ("models", "import"): _cmd_models_import,
     ("models", "scan"): _cmd_models_scan,
     ("models", "forget"): _cmd_models_forget,

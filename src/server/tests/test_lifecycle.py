@@ -176,11 +176,16 @@ class FakeEngine:
     def __init__(self) -> None:
         self.state = EngineState.UNLOADED
         self.loads: list[str] = []
+        # Every adapter this engine was handed, `None` included. Recorded
+        # positionally alongside `loads`, so a load that silently dropped the
+        # adapter is visible rather than merely absent.
+        self.adapters: list[str | None] = []
         self.unloads = 0
         self.load_elapsed_seconds = None
 
-    async def load(self, path, served_name, context_length):  # noqa: ANN001
+    async def load(self, path, served_name, context_length, *, adapter_path=None):  # noqa: ANN001
         self.loads.append(served_name)
+        self.adapters.append(adapter_path)
         self.state = EngineState.READY
         return type(
             "Loaded",
@@ -189,6 +194,7 @@ class FakeEngine:
                 "served_name": served_name,
                 "quantization": "mxfp4-4bit",
                 "context_length": context_length,
+                "adapter": None,
             },
         )()
 
@@ -305,7 +311,7 @@ def test_two_concurrent_requests_for_the_same_model_both_proceed() -> None:
 
 def test_a_load_failure_is_reported_and_leaves_no_current_model() -> None:
     class Failing(FakeEngine):
-        async def load(self, path, served_name, context_length):  # noqa: ANN001
+        async def load(self, path, served_name, context_length, *, adapter_path=None):  # noqa: ANN001
             raise RuntimeError("weights unreadable")
 
     supervisor = ModelSupervisor(Failing())
@@ -379,3 +385,141 @@ def test_a_ready_engine_the_supervisor_owns_nothing_in_is_not_reported_ready() -
     assert supervisor.current is None
     assert snapshot.model is None
     assert snapshot.state is LifecycleState.IDLE
+
+
+# -- adapters ----------------------------------------------------------------
+#
+# An adapter changes which weights answer, so it is part of the model's load
+# identity rather than of its name. These pin the consequence: two models can
+# now differ while sharing every name they have, and the supervisor must treat
+# that as a different model rather than as the resident one.
+
+
+def adapted(slug: str, adapter: str | None) -> ServedModel:
+    return ServedModel(
+        slug=slug,
+        display_name=slug,
+        context_window=131072,
+        path=f"/m/{slug}",
+        adapter_path=adapter,
+    )
+
+
+def test_the_adapter_reaches_the_engine_on_every_load() -> None:
+    """Including when there is none.
+
+    A supervisor that passed the adapter only when set would leave every engine
+    double in this file green while the real engine never received one.
+    """
+    engine = FakeEngine()
+    supervisor = ModelSupervisor(engine)
+
+    async def run() -> None:
+        async with supervisor.lease(adapted("gpt-oss-20b", "/adapters/style-fr")):
+            pass
+
+    asyncio.run(run())
+    assert engine.adapters == ["/adapters/style-fr"]
+
+
+def test_a_model_without_an_adapter_hands_the_engine_none() -> None:
+    engine = FakeEngine()
+    supervisor = ModelSupervisor(engine)
+
+    async def run() -> None:
+        async with supervisor.lease(model("gpt-oss-20b")):
+            pass
+
+    asyncio.run(run())
+    assert engine.adapters == [None]
+
+
+def test_the_same_name_with_a_different_adapter_is_not_the_resident_model() -> None:
+    """The discriminating test for the whole feature.
+
+    Both leases ask for `gpt-oss-20b`. Comparing names would reuse the resident
+    weights and answer the second request from the first adapter — silently, and
+    indistinguishably from success.
+    """
+    engine = FakeEngine()
+    supervisor = ModelSupervisor(engine)
+
+    async def run() -> None:
+        async with supervisor.lease(adapted("gpt-oss-20b", "/adapters/first")):
+            pass
+        async with supervisor.lease(adapted("gpt-oss-20b", "/adapters/second")):
+            pass
+
+    asyncio.run(run())
+    assert engine.loads == ["gpt-oss-20b", "gpt-oss-20b"]
+    assert engine.adapters == ["/adapters/first", "/adapters/second"]
+    # No explicit unload, exactly as for a switch between two different models:
+    # the engine releases what it holds inside its own load.
+    assert engine.unloads == 0
+
+
+def test_removing_an_adapter_reloads_the_base_weights() -> None:
+    engine = FakeEngine()
+    supervisor = ModelSupervisor(engine)
+
+    async def run() -> None:
+        async with supervisor.lease(adapted("gpt-oss-20b", "/adapters/first")):
+            pass
+        async with supervisor.lease(adapted("gpt-oss-20b", None)):
+            pass
+
+    asyncio.run(run())
+    assert engine.adapters == ["/adapters/first", None]
+
+
+def test_an_unchanged_adapter_does_not_reload_anything() -> None:
+    """The control: identity comparison must not turn every lease into a load."""
+    engine = FakeEngine()
+    supervisor = ModelSupervisor(engine)
+
+    async def run() -> None:
+        for _ in range(3):
+            async with supervisor.lease(adapted("gpt-oss-20b", "/adapters/first")):
+                pass
+
+    asyncio.run(run())
+    assert engine.loads == ["gpt-oss-20b"]
+    assert engine.unloads == 0
+
+
+def test_changing_an_adapter_under_a_live_request_is_refused_rather_than_switched() -> None:
+    """Same rule as any other switch, and the message has to say which one.
+
+    Both models are called `gpt-oss-20b`, so a message naming only the two slugs
+    would read as "`gpt-oss-20b` cannot be loaded because `gpt-oss-20b` is
+    busy", which explains nothing.
+    """
+    engine = FakeEngine()
+    supervisor = ModelSupervisor(engine)
+
+    async def run() -> None:
+        async with supervisor.lease(adapted("gpt-oss-20b", "/adapters/first")):
+            with pytest.raises(ModelBusyError) as caught:
+                async with supervisor.lease(adapted("gpt-oss-20b", "/adapters/second")):
+                    pass
+            assert "adapter" in str(caught.value)
+
+    asyncio.run(run())
+    assert engine.loads == ["gpt-oss-20b"]
+    assert engine.unloads == 0
+
+
+def test_a_plain_model_switch_still_reads_as_one() -> None:
+    """The counter-case: two different models need no extra explanation."""
+    engine = FakeEngine()
+    supervisor = ModelSupervisor(engine)
+
+    async def run() -> None:
+        async with supervisor.lease(model("gpt-oss-20b")):
+            with pytest.raises(ModelBusyError) as caught:
+                async with supervisor.lease(model("gpt-oss-120b")):
+                    pass
+            assert "adapter" not in str(caught.value)
+            assert "gpt-oss-120b" in str(caught.value)
+
+    asyncio.run(run())

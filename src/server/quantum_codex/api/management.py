@@ -107,6 +107,21 @@ def build_router(*, token: str, context: Any) -> APIRouter:
                     "quantization": loaded.quantization,
                     "context_length": loaded.context_length,
                     "layers": loaded.num_hidden_layers,
+                    # What was *applied*, measured at load, not the setting that
+                    # asked for it. `installed_models` below reports the
+                    # setting; the two are deliberately different questions,
+                    # because an adapter that applied to nothing would answer
+                    # the first one wrongly and only the second one right.
+                    "adapter": (
+                        {
+                            "path": loaded.adapter.path,
+                            "fine_tune_type": loaded.adapter.fine_tune_type,
+                            "applied_tensors": loaded.adapter.applied_tensors,
+                            "adapter_tensors": loaded.adapter.adapter_tensors,
+                        }
+                        if loaded.adapter
+                        else None
+                    ),
                 }
                 if loaded
                 else None
@@ -120,6 +135,9 @@ def build_router(*, token: str, context: Any) -> APIRouter:
                     "display_name": model.display_name,
                     "context_window": model.context_window,
                     "quantization": model.quantization,
+                    # Configured, not necessarily resident, and not necessarily
+                    # resident *with* it -- see `model.adapter` above.
+                    "adapter_path": model.adapter_path,
                     "loaded": current is not None and current.slug == model.slug,
                 }
                 for model in installed
