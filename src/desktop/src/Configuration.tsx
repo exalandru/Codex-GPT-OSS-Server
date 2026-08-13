@@ -7,6 +7,11 @@
 //
 // The practical consequence: adding a setting on the server makes it appear
 // here with its label, help and bounds, and this file does not change.
+//
+// One thing on this view is not part of a profile: where downloaded weights are
+// written. It is a single choice for the installation, it has its own server
+// command, and it is rendered below the form behind a rule so it cannot read as
+// a field of whichever profile happens to be selected.
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -181,190 +186,268 @@ export function Configuration({ serverRunning }: { serverRunning: boolean }) {
     }
   }
 
-  if (!schema) {
-    return (
-      <section className="panel">
-        <h2>Configuration</h2>
-        {failure ? (
-          <div className="notice notice-error">{failure}</div>
-        ) : (
-          <p className="empty">Reading the settings the server publishes…</p>
-        )}
-      </section>
-    );
-  }
-
   const dirty = Object.keys(edits).length > 0;
 
+  // One return rather than an early one, so `ModelStorage` below is mounted
+  // once for the life of the view. Rendering it in two branches instead gave it
+  // two lifetimes: it was unmounted and remounted the moment the profile schema
+  // arrived, and re-read a global setting because a profile-shaped answer had
+  // landed. Its lifetime does not depend on the profile schema, so its position
+  // in the tree must not either.
   return (
-    <section className="panel">
-      <h2>Configuration</h2>
+    <>
+      <section className="panel">
+        <h2>Configuration</h2>
 
-      <div className="actions">
-        <button
-          disabled={busy !== null || pending !== null}
-          onClick={() => begin("new", "")}
-        >
-          New profile
-        </button>
-        <button
-          disabled={busy !== null || pending !== null || !selected}
-          onClick={() => begin("duplicate", `${selected} copy`)}
-        >
-          Duplicate
-        </button>
-        <button
-          disabled={busy !== null || pending !== null || !selected}
-          onClick={() => begin("rename", selected ?? "")}
-        >
-          Rename
-        </button>
-        {/* Two steps, because deleting a profile discards settings that exist
-            nowhere else. */}
-        {confirmDelete ? (
+        {!schema ? (
+          failure ? (
+            <div className="notice notice-error">{failure}</div>
+          ) : (
+            <p className="empty">Reading the settings the server publishes…</p>
+          )
+        ) : (
           <>
+          <div className="actions">
             <button
-              className="danger"
-              disabled={busy !== null || !selected}
+              disabled={busy !== null || pending !== null}
+              onClick={() => begin("new", "")}
+            >
+              New profile
+            </button>
+            <button
+              disabled={busy !== null || pending !== null || !selected}
+              onClick={() => begin("duplicate", `${selected} copy`)}
+            >
+              Duplicate
+            </button>
+            <button
+              disabled={busy !== null || pending !== null || !selected}
+              onClick={() => begin("rename", selected ?? "")}
+            >
+              Rename
+            </button>
+            {/* Two steps, because deleting a profile discards settings that exist
+                nowhere else. */}
+            {confirmDelete ? (
+              <>
+                <button
+                  className="danger"
+                  disabled={busy !== null || !selected}
+                  onClick={() => {
+                    if (!selected) return;
+                    void lifecycle("delete", () => api.removeProfile(selected), {
+                      message: `Deleted ${selected}.`,
+                    });
+                  }}
+                >
+                  {busy === "delete" ? "Deleting…" : `Delete ${selected}`}
+                </button>
+                <button disabled={busy !== null} onClick={() => setConfirmDelete(false)}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                disabled={busy !== null || pending !== null || !selected}
+                onClick={() => {
+                  setConfirmDelete(true);
+                  setResult(null);
+                  setFailure(null);
+                }}
+              >
+                Delete…
+              </button>
+            )}
+            <button
+              disabled={busy !== null || !selected || selected === defaultProfile}
               onClick={() => {
                 if (!selected) return;
-                void lifecycle("delete", () => api.removeProfile(selected), {
-                  message: `Deleted ${selected}.`,
+                void lifecycle("default", () => api.setDefaultProfile(selected), {
+                  message: `${selected} is now the default.`,
                 });
               }}
             >
-              {busy === "delete" ? "Deleting…" : `Delete ${selected}`}
-            </button>
-            <button disabled={busy !== null} onClick={() => setConfirmDelete(false)}>
-              Cancel
-            </button>
-          </>
-        ) : (
-          <button
-            disabled={busy !== null || pending !== null || !selected}
-            onClick={() => {
-              setConfirmDelete(true);
-              setResult(null);
-              setFailure(null);
-            }}
-          >
-            Delete…
-          </button>
-        )}
-        <button
-          disabled={busy !== null || !selected || selected === defaultProfile}
-          onClick={() => {
-            if (!selected) return;
-            void lifecycle("default", () => api.setDefaultProfile(selected), {
-              message: `${selected} is now the default.`,
-            });
-          }}
-        >
-          {selected && selected === defaultProfile ? "Is default" : "Make default"}
-        </button>
-      </div>
-
-      {pending && (
-        <form
-          className="actions"
-          aria-label="Profile name"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void submitPending();
-          }}
-        >
-          <label htmlFor="profile-name">{PENDING_LABEL[pending.kind]}</label>
-          <input
-            id="profile-name"
-            className="repo-input"
-            autoFocus
-            value={pending.name}
-            onChange={(event) =>
-              setPending((current) => (current ? { ...current, name: event.target.value } : null))
-            }
-          />
-          <button type="submit" disabled={busy !== null || !pending.name.trim()}>
-            {busy ? "Working…" : PENDING_ACTION[pending.kind]}
-          </button>
-          <button type="button" disabled={busy !== null} onClick={() => setPending(null)}>
-            Cancel
-          </button>
-        </form>
-      )}
-
-      {profiles.length === 0 ? (
-        <>
-          <div className="empty-cta">
-            <p>No profiles yet. A profile holds this server's settings — port, limits, defaults.</p>
-            <button
-              className="primary"
-              disabled={busy !== null || pending !== null}
-              onClick={() => begin("new", "dev")}
-            >
-              Create profile
+              {selected && selected === defaultProfile ? "Is default" : "Make default"}
             </button>
           </div>
-          {result && <div className="notice notice-ok">{result}</div>}
-          {failure && (
-            <div className="notice notice-error" role="alert">
-              {failure}
-            </div>
-          )}
-        </>
-      ) : (
-        <>
-          <div className="actions">
-            <select
-              className="repo-input"
-              value={selected ?? ""}
-              onChange={(event) => {
-                setSelected(event.target.value);
-                setEdits({});
-                setResult(null);
-                setFailure(null);
+
+          {pending && (
+            <form
+              className="actions"
+              aria-label="Profile name"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitPending();
               }}
             >
-              {profiles.map((entry) => (
-                <option key={String(entry.name)} value={String(entry.name)}>
-                  {String(entry.name)}
-                </option>
-              ))}
-            </select>
-            <button disabled={!dirty || saving} onClick={() => void save()}>
-              {saving ? "Saving…" : "Save"}
-            </button>
-            <button disabled={!dirty || saving} onClick={() => setEdits({})}>
-              Discard
-            </button>
-          </div>
-
-          {result && <div className="notice notice-ok">{result}</div>}
-          {failure && (
-            <div className="notice notice-error" role="alert">
-              {failure}
-            </div>
+              <label htmlFor="profile-name">{PENDING_LABEL[pending.kind]}</label>
+              <input
+                id="profile-name"
+                className="repo-input"
+                autoFocus
+                value={pending.name}
+                onChange={(event) =>
+                  setPending((current) => (current ? { ...current, name: event.target.value } : null))
+                }
+              />
+              <button type="submit" disabled={busy !== null || !pending.name.trim()}>
+                {busy ? "Working…" : PENDING_ACTION[pending.kind]}
+              </button>
+              <button type="button" disabled={busy !== null} onClick={() => setPending(null)}>
+                Cancel
+              </button>
+            </form>
           )}
 
-          {schema.groups.map((group) => {
-            const fields = schema.fields.filter((field) => field.group === group.id);
-            if (fields.length === 0) return null;
-            return (
-              <fieldset key={group.id} className="settings-group">
-                <legend>{group.label}</legend>
-                <p className="empty">{group.help}</p>
-                {fields.map((field) => (
-                  <Setting
-                    key={field.name}
-                    field={field}
-                    value={shown(field)}
-                    serverRunning={serverRunning}
-                    onChange={(value) => setEdits((current) => ({ ...current, [field.name]: value }))}
-                  />
-                ))}
-              </fieldset>
-            );
-          })}
-        </>
+          {profiles.length === 0 ? (
+            <>
+              <div className="empty-cta">
+                <p>No profiles yet. A profile holds this server's settings — port, limits, defaults.</p>
+                <button
+                  className="primary"
+                  disabled={busy !== null || pending !== null}
+                  onClick={() => begin("new", "dev")}
+                >
+                  Create profile
+                </button>
+              </div>
+              {result && <div className="notice notice-ok">{result}</div>}
+              {failure && (
+                <div className="notice notice-error" role="alert">
+                  {failure}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="actions">
+                <select
+                  className="repo-input"
+                  value={selected ?? ""}
+                  onChange={(event) => {
+                    setSelected(event.target.value);
+                    setEdits({});
+                    setResult(null);
+                    setFailure(null);
+                  }}
+                >
+                  {profiles.map((entry) => (
+                    <option key={String(entry.name)} value={String(entry.name)}>
+                      {String(entry.name)}
+                    </option>
+                  ))}
+                </select>
+                <button disabled={!dirty || saving} onClick={() => void save()}>
+                  {saving ? "Saving…" : "Save"}
+                </button>
+                <button disabled={!dirty || saving} onClick={() => setEdits({})}>
+                  Discard
+                </button>
+              </div>
+
+              {result && <div className="notice notice-ok">{result}</div>}
+              {failure && (
+                <div className="notice notice-error" role="alert">
+                  {failure}
+                </div>
+              )}
+
+              {schema.groups.map((group) => {
+                const fields = schema.fields.filter((field) => field.group === group.id);
+                if (fields.length === 0) return null;
+                return (
+                  <fieldset key={group.id} className="settings-group">
+                    <legend>{group.label}</legend>
+                    <p className="empty">{group.help}</p>
+                    {fields.map((field) => (
+                      <Setting
+                        key={field.name}
+                        field={field}
+                        value={shown(field)}
+                        serverRunning={serverRunning}
+                        onChange={(value) => setEdits((current) => ({ ...current, [field.name]: value }))}
+                      />
+                    ))}
+                  </fieldset>
+                );
+              })}
+            </>
+          )}
+          </>
+        )}
+      </section>
+
+      {/* A sibling card, not a ruled-off region inside the profile card. It
+          belongs to no profile, and a divider drawn inside someone else's
+          container still reads as part of that container. */}
+      <ModelStorage />
+    </>
+  );
+}
+
+/** Where downloaded weights are written. One choice for the installation.
+ *
+ * Not a profile field and not a model setting: it is read and written through
+ * the server's own storage command, which is the single authority for it. It is
+ * on this view because this is where global settings are, and it was briefly in
+ * the per-model dialog, where it read as something a model could own.
+ */
+function ModelStorage() {
+  const [storage, setStorage] = useState<Record<string, unknown> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  // A daemon that is not answering is not an error worth alarming about here:
+  // the location is still shown as unknown and the button still works, because
+  // choosing one is what a user came to do.
+  const refresh = useCallback(async () => {
+    setStorage((await api.modelStorage().catch(() => null)) as Record<string, unknown> | null);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  async function choose() {
+    setBusy(true);
+    setFailure(null);
+    try {
+      const chosen = await api.chooseModelDirectory();
+      // A cancelled picker changes nothing; re-reading is still right, because
+      // it is the server's answer either way.
+      if (chosen) await api.setModelStorage(chosen);
+      await refresh();
+    } catch (cause) {
+      // The server's own words about the directory it refused.
+      setFailure(String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel model-storage" aria-label="Model storage">
+      <h2>Model storage</h2>
+      <div className="setting">
+        <span className="setting-label">Download location</span>
+        <div className="storage">
+          <code className="library-path">{String(storage?.download_root ?? "—")}</code>
+          <button disabled={busy} onClick={() => void choose()}>
+            Choose…
+          </button>
+          {storage && storage.available === false && (
+            <span className="pill pill-down">volume not mounted</span>
+          )}
+        </div>
+        <p className="setting-help">
+          Global location used for downloaded models. Imported models are left in their
+          original location.
+        </p>
+      </div>
+      {failure && (
+        <div className="notice notice-error" role="alert">
+          {failure}
+        </div>
       )}
     </section>
   );

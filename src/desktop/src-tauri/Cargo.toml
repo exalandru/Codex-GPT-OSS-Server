@@ -1,6 +1,6 @@
 [package]
 name = "quantum-codex-desktop"
-version = "1.0.0"
+version = "1.0.1"
 description = "Quantum Codex — macOS control plane"
 license = "MIT"
 edition = "2021"

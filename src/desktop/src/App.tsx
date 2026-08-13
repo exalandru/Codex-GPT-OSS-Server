@@ -4,6 +4,18 @@
 // the server already knows, and nothing is displayed that the server did not
 // report — an empty field reads as "—" rather than as a plausible default,
 // because a fabricated zero is worse than a visible gap.
+//
+// Three cards, in the order an operator asks the questions: what is this session
+// (is it up, what is loaded, where do I point Codex), what is it doing (activity
+// and cache reuse), what can the model do. Each card leads with one dominant
+// value and puts the rest in secondary rows, because the previous five
+// equal-weight key/value tables made every fact cost the same to find.
+//
+// The one derivation this file performs is telling a *cold* cache from a cache
+// that is genuinely missing: the server reports `hit_ratio` as 0.0 when nothing
+// has been looked up at all, so 0% and "no lookups yet" arrive identically. The
+// discriminator is `hits + misses`, which the server also reports. Everything
+// else is passed through.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -76,6 +88,32 @@ function idleTimeout(seconds: number | undefined): string | null {
   if (seconds < 60) return `${seconds} s`;
   return `${Math.round(seconds / 60)} min`;
 }
+
+/** How long the daemon has been up, at the coarseness a glance wants.
+ *
+ * The raw seconds are still the server's; only the unit is chosen here. A row
+ * reading "2543.1 s" makes the reader do the arithmetic that this dashboard
+ * exists to have already done.
+ */
+function uptime(seconds: number | undefined): string {
+  if (seconds === undefined) return "—";
+  const whole = Math.round(seconds);
+  if (whole < 60) return `${whole}s`;
+  if (whole < 3600) return `${Math.floor(whole / 60)}m`;
+  return `${Math.floor(whole / 3600)}h ${Math.floor((whole % 3600) / 60)}m`;
+}
+
+/** Which of the connection states deserves which existing status colour.
+ *
+ * Deliberately the same three the header pill uses. A running server must be
+ * obvious without a fourth colour being invented for each new nuance.
+ */
+const CONNECTION_TONE: Record<Connection, "live" | "warn" | "down"> = {
+  starting: "warn",
+  online: "live",
+  reconnecting: "warn",
+  offline: "down",
+};
 
 export default function App() {
   const [discovery, setDiscovery] = useState<api.Discovery | null>(null);
@@ -371,35 +409,51 @@ export default function App() {
         <Configuration serverRunning={connected} />
       ) : (
       <>
-      <section className="actions">
-        <button disabled={connected || busy !== null} onClick={() => act("start", api.start)}>
-          {busy === "start" ? "Starting…" : "Start"}
-        </button>
-        <button disabled={!connected || busy !== null} onClick={() => act("stop", api.stop)}>
-          {busy === "stop" ? "Stopping…" : "Stop"}
-        </button>
-        <button disabled={busy !== null} onClick={() => act("restart", () => api.restart())}>
-          {busy === "restart" ? "Restarting…" : "Restart"}
-        </button>
-        {/* Only when weights are actually resident. The server refuses an
-            unload while inference is in flight and says so; that refusal is
-            shown verbatim rather than pre-empted here, because the dashboard's
-            two-second poll cannot know what arrived a moment ago. */}
-        {modelResident && (
+      {/* Three groups, separated by spacing rather than by boxes: what the
+          server's lifecycle is, what maintenance can be done to it, and the one
+          thing the user actually came to do. Every handler, every disabled
+          condition and every label is unchanged — only the grouping is new. */}
+      <section className="controlbar" aria-label="Server controls">
+        <div className="control-group">
+          <button disabled={connected || busy !== null} onClick={() => act("start", api.start)}>
+            {busy === "start" ? "Starting…" : "Start"}
+          </button>
+          <button disabled={!connected || busy !== null} onClick={() => act("stop", api.stop)}>
+            {busy === "stop" ? "Stopping…" : "Stop"}
+          </button>
+          <button disabled={busy !== null} onClick={() => act("restart", () => api.restart())}>
+            {busy === "restart" ? "Restarting…" : "Restart"}
+          </button>
+        </div>
+
+        <div className="control-group">
+          {/* Only when weights are actually resident. The server refuses an
+              unload while inference is in flight and says so; that refusal is
+              shown verbatim rather than pre-empted here, because the dashboard's
+              two-second poll cannot know what arrived a moment ago. */}
+          {modelResident && (
+            <button
+              disabled={!connected || busy !== null}
+              onClick={() => act("unload", api.unloadModel)}
+            >
+              {busy === "unload" ? "Unloading…" : "Unload model"}
+            </button>
+          )}
           <button
             disabled={!connected || busy !== null}
-            onClick={() => act("unload", api.unloadModel)}
+            onClick={() => act("cache", api.clearCache)}
           >
-            {busy === "unload" ? "Unloading…" : "Unload model"}
+            {busy === "cache" ? "Clearing…" : "Clear cache"}
           </button>
-        )}
+        </div>
+
+        <div className="control-group control-cta">
+        {/* The workflow this application exists for, so it carries the one
+            accent border on the bar. Not a filled button: it is reachable at
+            every moment, including while the server is down, and a permanent
+            call to action shouting from a stopped dashboard is noise. */}
         <button
-          disabled={!connected || busy !== null}
-          onClick={() => act("cache", api.clearCache)}
-        >
-          {busy === "cache" ? "Clearing…" : "Clear cache"}
-        </button>
-        <button
+          className="primary"
           aria-expanded={launchOpen}
           onClick={async () => {
             // A disclosure: pressing it again puts it away. Opening something
@@ -423,6 +477,7 @@ export default function App() {
         >
           Launch Codex
         </button>
+        </div>
       </section>
 
       {launchOpen && (
@@ -504,106 +559,17 @@ export default function App() {
         </section>
       )}
 
-      <div className="grid">
-        <Panel title="Server">
-          {/* The daemon's own state, which no longer depends on whether any
-              weights are resident. */}
-          <Row label="State" value={connection === "online" ? "running" : CONNECTION_LABEL[connection]} />
-          <Row label="Executable" value={environment?.resolved?.source ?? "not found"} />
-          <Row label="Uptime" value={`${api.text(status, "server", "uptime_seconds")} s`} />
-          <Row label="Endpoint" value={api.text(status, "server", "endpoint")} />
-        </Panel>
-
-        <Panel title="Model">
-          {/* Separate from the server's state: RUNNING / NONE is a normal
-              pairing, and so is RUNNING / LOADING. */}
-          <Row
-            label="Loaded"
-            value={
-              typeof lifecycle?.display_name === "string" ? lifecycle.display_name : "none"
-            }
-          />
-          <Row
-            label="State"
-            value={
-              lifecycleState
-                ? `${LIFECYCLE_LABEL[lifecycleState] ?? lifecycleState}${
-                    loadingModel && typeof lifecycle?.elapsed_seconds === "number"
-                      ? ` — ${Math.round(lifecycle.elapsed_seconds)} s`
-                      : ""
-                  }`
-                : "—"
-            }
-          />
-          {/* Enough to understand the feature without a live countdown: what
-              was configured, and whether a release is actually scheduled. The
-              remaining time is derivable and would jitter with the poll. */}
-          <Row
-            label="Auto-unload"
-            value={(() => {
-              // "not reported" and "reported as 0" are different facts. Folding
-              // them together said "disabled" whenever the daemon was
-              // unreachable, which is the one moment the claim is unfounded.
-              const seconds = api.count(lifecycle, "idle_timeout_seconds");
-              if (seconds === undefined) return "—";
-              const configured = idleTimeout(seconds);
-              if (configured === null) return "disabled";
-              if (!lifecycle?.auto_unload_armed) return `after ${configured} idle`;
-              const idle = api.count(lifecycle, "idle_seconds");
-              return `after ${configured} idle — idle ${api.duration(idle)}`;
-            })()}
-          />
-          <Row label="Served as" value={api.text(status, "model", "served_name")} />
-          <Row label="Quantization" value={api.text(status, "model", "quantization")} />
-          <Row label="Layers" value={api.text(status, "model", "layers")} />
-          <Row label="Path" value={api.text(status, "model", "path")} wrap />
-        </Panel>
-
-        <Panel title="Capabilities">
-          <Row
-            label="Context"
-            value={`${api.tokens(api.count(status, "capabilities", "context_window"))} tokens`}
-          />
-          <Row
-            label="Reasoning"
-            value={
-              (api.pick(status, "capabilities", "reasoning_efforts") as string[] | undefined)?.join(
-                ", ",
-              ) ?? "—"
-            }
-          />
-          <Row label="Tools" value={yesNo(api.pick(status, "capabilities", "supports_tools"))} />
-          <Row
-            label="Parallel calls"
-            value={yesNo(api.pick(status, "capabilities", "supports_parallel_tool_calls"))}
-          />
-        </Panel>
-
-        <Panel title="Inference">
-          <Row label="Active" value={api.text(status, "inference", "active_requests")} />
-          <Row label="Queued" value={api.text(status, "inference", "queued_requests")} />
-        </Panel>
-
-        <Panel title="Prompt cache">
-          <Row
-            label="Sessions"
-            value={`${api.text(status, "prompt_cache", "entries")} / ${api.text(
-              status,
-              "prompt_cache",
-              "max_entries",
-            )}`}
-          />
-          <Row
-            label="Memory"
-            value={api.bytes(api.count(status, "prompt_cache", "bytes"))}
-          />
-          <Row label="Hit ratio" value={ratio(api.count(status, "prompt_cache", "hit_ratio"))} />
-          <Row
-            label="Tokens reused"
-            value={api.tokens(api.count(status, "prompt_cache", "cached_tokens_total"))}
-          />
-          <Row label="Evictions" value={api.text(status, "prompt_cache", "evictions")} />
-        </Panel>
+      <div className="grid dashboard">
+        <CurrentSession
+          connection={connection}
+          status={status}
+          lifecycle={lifecycle}
+          lifecycleState={lifecycleState}
+          loadingModel={loadingModel}
+          executable={environment?.resolved?.source ?? null}
+        />
+        <Performance status={status} />
+        <ModelCapabilities status={status} />
       </div>
 
       </>
@@ -631,21 +597,328 @@ function Logs({ lines }: { lines: string[] }) {
   );
 }
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+/** One dashboard card: a heading row, a lead, and whatever follows.
+ *
+ * The status badge lives on the heading row rather than above the lead. Stacked,
+ * it was an extra line that only the first card had, so that card's model name
+ * started 22px below the other two cards' primary values and the row of three
+ * read as misaligned. On the heading row it costs no vertical space at all.
+ */
+function Card({
+  title,
+  flag,
+  children,
+}: {
+  title: string;
+  /** An operational state, in the colours the header pill already uses. */
+  flag?: { label: string; tone: "live" | "warn" | "down" };
+  children: React.ReactNode;
+}) {
   return (
-    <section className="panel">
-      <h2>{title}</h2>
-      <dl>{children}</dl>
+    <section className="panel dash" aria-label={title}>
+      <div className="dash-head">
+        <h2>{title}</h2>
+        {flag && <span className={`pill pill-${flag.tone}`}>{flag.label}</span>}
+      </div>
+      {children}
     </section>
   );
 }
 
-function Row({ label, value, wrap }: { label: string; value: string; wrap?: boolean }) {
+/** The dominant value of a card, with the phrase that says what it is.
+ *
+ * One per card, deliberately. A dashboard where six numbers are all 22px is the
+ * flat table this replaces, drawn larger.
+ */
+function Lead({
+  value,
+  caption,
+  children,
+}: {
+  value: string;
+  caption: string;
+  /** Anything else belonging above the rows. Inside the lead rather than beside
+   *  it so one floor normalises the height of all three cards' lead blocks. */
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="dash-lead">
+      <p className="dash-value">{value}</p>
+      <p className="dash-caption">{caption}</p>
+      {children}
+    </div>
+  );
+}
+
+/** The secondary rows. Labels recede, values carry the scan. */
+function Rows({ children }: { children: React.ReactNode }) {
+  return <dl className="metrics">{children}</dl>;
+}
+
+function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <>
       <dt>{label}</dt>
-      <dd className={wrap ? "wrap" : undefined}>{value}</dd>
+      <dd className={mono ? "mono" : undefined}>{value}</dd>
     </>
+  );
+}
+
+/** A card whose subject is genuinely absent, said once instead of six times.
+ *
+ * Not the same as a value the server did not report — that is still "—" in a
+ * row. This is for a whole section having nothing behind it, where a column of
+ * dashes claims the shape of data that does not exist.
+ */
+function Absent({ headline, detail }: { headline: string; detail: string }) {
+  return (
+    <div className="dash-lead">
+      <p className="dash-value dash-value-quiet">{headline}</p>
+      <p className="dash-caption">{detail}</p>
+    </div>
+  );
+}
+
+/** Is it up, what is loaded, and where does Codex point.
+ *
+ * The daemon's state and the model's residency stay separate facts: RUNNING with
+ * nothing loaded is normal, and so is RUNNING while weights are still coming in.
+ */
+function CurrentSession({
+  connection,
+  status,
+  lifecycle,
+  lifecycleState,
+  loadingModel,
+  executable,
+}: {
+  connection: Connection;
+  status: unknown;
+  lifecycle: Record<string, unknown> | undefined;
+  lifecycleState: string | null;
+  loadingModel: boolean;
+  executable: string | null;
+}) {
+  const loaded = typeof lifecycle?.display_name === "string" ? lifecycle.display_name : null;
+  // The daemon answered at some point and the answer is still on screen. This,
+  // not the connection enum, is what decides whether there is anything to put
+  // in the rows: `reconnecting` keeps the last good status, `offline` discards
+  // it, and both are "not online".
+  const reported = status !== null && status !== undefined;
+
+  // Only claims the server's own state establishes. "Ready for Codex" is said
+  // for `ready` and nothing else: that is the one lifecycle value meaning
+  // weights are resident and requests will be served without a load first.
+  // `idle` gets the on-demand sentence instead, which is what the server
+  // actually does, and a daemon that is not answering gets an instruction
+  // rather than a diagnosis — it used to read "Connected." while reconnecting
+  // with no data at all, which is the one moment the word is unfounded.
+  const caption = !reported
+    ? connection === "starting"
+      ? "Waiting for the server to answer."
+      : connection === "reconnecting"
+        ? "The server stopped answering. Retrying."
+        : "Start the server to accept Codex requests."
+    : lifecycleState === "ready"
+      ? "Ready for Codex"
+      : loadingModel
+        ? `${LIFECYCLE_LABEL[lifecycleState ?? ""] ?? lifecycleState}${
+            typeof lifecycle?.elapsed_seconds === "number"
+              ? ` — ${Math.round(lifecycle.elapsed_seconds)} s`
+              : ""
+          }`
+        : lifecycleState === "model_unloading"
+          ? "Releasing the weights; the server keeps running."
+          : lifecycleState === "error"
+            ? "The server reported an error."
+            : lifecycleState === "idle"
+              ? "A model is loaded on demand when Codex connects."
+              : "The server is answering.";
+
+  return (
+    <Card
+      title="Current session"
+      flag={{ label: CONNECTION_LABEL[connection], tone: CONNECTION_TONE[connection] }}
+    >
+      <Lead value={loaded ?? "No model loaded"} caption={caption} />
+      {/* With nothing reported, every one of these rows would be a dash. Six
+          dashes in a column look like readings that came back empty; they are
+          in fact questions that were never answered, and saying so once is both
+          shorter and truer. The executable stays: it is read from this machine,
+          not from the daemon, so it is known either way. */}
+      {reported ? (
+        <Rows>
+          <Row
+            label="State"
+            value={
+              lifecycleState
+                ? `${LIFECYCLE_LABEL[lifecycleState] ?? lifecycleState}${
+                    loadingModel && typeof lifecycle?.elapsed_seconds === "number"
+                      ? ` — ${Math.round(lifecycle.elapsed_seconds)} s`
+                      : ""
+                  }`
+                : "—"
+            }
+          />
+          <Row label="Served as" value={api.text(status, "model", "served_name")} mono />
+          <Row label="Endpoint" value={api.text(status, "server", "endpoint")} mono />
+          <Row label="Uptime" value={uptime(api.count(status, "server", "uptime_seconds"))} />
+          {/* Enough to understand the feature without a live countdown: what was
+              configured, and whether a release is actually scheduled. The
+              remaining time is derivable and would jitter with the poll. */}
+          <Row
+            label="Auto-unload"
+            value={(() => {
+              // "not reported" and "reported as 0" are different facts. Folding
+              // them together said "disabled" whenever the daemon was
+              // unreachable, which is the one moment the claim is unfounded.
+              const seconds = api.count(lifecycle, "idle_timeout_seconds");
+              if (seconds === undefined) return "—";
+              const configured = idleTimeout(seconds);
+              if (configured === null) return "disabled";
+              if (!lifecycle?.auto_unload_armed) return `after ${configured} idle`;
+              const idle = api.count(lifecycle, "idle_seconds");
+              return `after ${configured} idle — idle ${api.duration(idle)}`;
+            })()}
+          />
+          <Row label="Executable" value={executable ?? "not found"} />
+        </Rows>
+      ) : (
+        <>
+          <p className="dash-note">
+            State, endpoint, uptime and auto-unload are reported by the server, and appear
+            once it answers.
+          </p>
+          <Rows>
+            <Row label="Executable" value={executable ?? "not found"} />
+          </Rows>
+        </>
+      )}
+    </Card>
+  );
+}
+
+/** What the server is doing, and whether prefix reuse is paying.
+ *
+ * Inference activity lives here rather than in a card of its own: two integers
+ * did not justify a fifth panel, and "busy" and "reusing prompts" are the same
+ * question asked twice.
+ */
+function Performance({ status }: { status: unknown }) {
+  const cache = api.pick(status, "prompt_cache") as Record<string, unknown> | undefined;
+  const active = api.count(status, "inference", "active_requests");
+  const queued = api.count(status, "inference", "queued_requests");
+
+  // No cache object at all: the daemon is not answering. Nothing measured means
+  // nothing to show, and a column of dashes would imply otherwise.
+  if (cache === undefined || cache === null) {
+    return (
+      <Card title="Performance">
+        <Absent
+          headline="No active session"
+          detail="Activity and prompt-cache statistics appear once the server is running."
+        />
+      </Card>
+    );
+  }
+
+  // The server computes `hit_ratio` as hits / (hits + misses), and returns 0.0
+  // when that denominator is zero. So "0%" and "nothing has been looked up yet"
+  // arrive as the same number, and only the counters tell them apart. Printing
+  // 0% for a cache nobody has consulted states a measurement that was never
+  // taken.
+  const hits = api.count(cache, "hits");
+  const misses = api.count(cache, "misses");
+  const lookups = hits !== undefined && misses !== undefined ? hits + misses : undefined;
+  const measured = lookups !== undefined && lookups > 0;
+  const busy = (active ?? 0) > 0 || (queued ?? 0) > 0;
+
+  return (
+    <Card title="Performance">
+      <Lead
+        value={measured ? ratio(api.count(cache, "hit_ratio")) : "Cache cold"}
+        caption={measured ? "Prompt cache hit ratio" : "No prompt reuse measured yet"}
+      >
+        {/* Louder when something is in flight, quiet when nothing is. The
+            difference is one colour and one weight, which is all it takes for a
+            zero-activity dashboard to stop competing with the metric above. */}
+        <p className={busy ? "dash-activity is-busy" : "dash-activity"}>
+          {`${active ?? 0} active`}
+          <span className="dash-dot">·</span>
+          {`${queued ?? 0} queued`}
+        </p>
+      </Lead>
+      <Rows>
+        <Row
+          label="Sessions"
+          value={`${api.text(cache, "entries")} / ${api.text(cache, "max_entries")}`}
+        />
+        <Row label="Memory" value={api.bytes(api.count(cache, "bytes"))} />
+        <Row label="Tokens reused" value={api.tokens(api.count(cache, "cached_tokens_total"))} />
+        <Row label="Evictions" value={api.text(cache, "evictions")} />
+      </Rows>
+    </Card>
+  );
+}
+
+/** What the model can do, and the copy of it on disk.
+ *
+ * Two groups with different owners, kept apart. The capabilities come from the
+ * installed model the server describes; quantization, layers and path describe
+ * the weights that are resident *now*, and are simply absent while none are —
+ * said in one line rather than as three dashes pretending to be readings.
+ */
+function ModelCapabilities({ status }: { status: unknown }) {
+  const capabilities = api.pick(status, "capabilities") as Record<string, unknown> | undefined;
+  const model = api.pick(status, "model") as Record<string, unknown> | undefined;
+
+  if (capabilities === undefined || capabilities === null) {
+    return (
+      <Card title="Model capabilities">
+        <Absent
+          headline="No model loaded"
+          detail="Start the server with a model installed to see what it supports."
+        />
+      </Card>
+    );
+  }
+
+  const path = typeof model?.path === "string" ? model.path : null;
+
+  return (
+    <Card title="Model capabilities">
+      <Lead
+        value={api.tokens(api.count(capabilities, "context_window"))}
+        caption="context tokens"
+      />
+      <Rows>
+        <Row
+          label="Reasoning"
+          value={
+            (api.pick(capabilities, "reasoning_efforts") as string[] | undefined)?.join(", ") ?? "—"
+          }
+        />
+        <Row label="Tools" value={yesNo(api.pick(capabilities, "supports_tools"))} />
+        <Row
+          label="Parallel calls"
+          value={yesNo(api.pick(capabilities, "supports_parallel_tool_calls"))}
+        />
+        {model && <Row label="Quantization" value={api.text(model, "quantization")} />}
+        {model && <Row label="Layers" value={api.text(model, "layers")} />}
+      </Rows>
+      {/* Pinned to the bottom of the card and held to one line. A path is the
+          least-read thing here and the most able to set the card's height, so
+          it truncates and carries the whole value in its tooltip. */}
+      {path ? (
+        <p className="dash-path" title={path}>
+          {path}
+        </p>
+      ) : (
+        <p className="dash-path dash-path-empty">
+          Quantization, layers and path appear while a model is resident.
+        </p>
+      )}
+    </Card>
   );
 }
 

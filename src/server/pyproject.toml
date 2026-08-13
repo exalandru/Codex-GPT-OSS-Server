@@ -1,6 +1,6 @@
 [project]
 name = "quantum-codex"
-version = "1.0.0"
+version = "1.0.1"
 description = "Quantum Codex GPT-OSS Server: Codex + GPT-OSS + Harmony on MLX, Apple Silicon"
 readme = "README.md"
 license = "MIT"

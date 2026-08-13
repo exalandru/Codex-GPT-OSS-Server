@@ -9,7 +9,7 @@ Quantum Codex GPT-OSS Server is a native Codex backend for **GPT-OSS 20B and 120
 
 **No cloud model, no API key, no telemetry.** Start the app, download or locate a model, start the server, copy the generated Codex command, and work normally.
 
-> **Version 1.0.0** · tested with Codex CLI **0.147.0** on Apple Silicon macOS.
+> **Version 1.0.1** · tested with Codex CLI **0.147.0** on Apple Silicon macOS.
 
 ---
 

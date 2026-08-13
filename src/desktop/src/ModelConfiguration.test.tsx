@@ -366,3 +366,110 @@ describe("an imported model", () => {
     expect(await screen.findByText(/is claimed/)).toBeTruthy();
   });
 });
+
+/** Where downloads go is not one of a model's settings, and is not in here.
+ *
+ * It was, briefly. A global control inside a dialog titled after one model
+ * invites the reading that changing it changes something about that model. The
+ * dialog now contains what the schema declares for the model and nothing else,
+ * and the storage authority is not consulted from here at all.
+ */
+describe("the download location is absent from the model dialog", () => {
+  function withStorageAvailable() {
+    const calls: { command: string; args?: unknown }[] = [];
+    mocked.mockImplementation(async (command: string, args?: unknown) => {
+      calls.push({ command, args });
+      if (command === "model_config_schema") return MODEL_SCHEMA;
+      if (command === "model_config")
+        return { model: String((args as { slug?: string })?.slug), settings: {}, defaults: {}, effective: {}, inherited: [] };
+      // Answered, so a dialog that still asked would show a path rather than
+      // fail quietly — the absence below is a decision, not a broken read.
+      if (command === "model_storage")
+        return { download_root: "/Volumes/Weights/models", available: true };
+      if (command === "choose_model_directory") return "/Volumes/Other/models";
+      return { message: "ok" };
+    });
+    return calls;
+  }
+
+  it("renders no download location control", async () => {
+    withStorageAvailable();
+    render(<ModelConfiguration slug="library-7f3a" displayName="My Local Model" onClose={() => {}} />);
+
+    await screen.findByLabelText(/served as/i);
+    expect(screen.queryByText(/download location/i)).toBeNull();
+    expect(screen.queryByRole("region", { name: /download location/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Choose…" })).toBeNull();
+  });
+
+  it("does not show the global path even though the server would answer with one", async () => {
+    withStorageAvailable();
+    render(<ModelConfiguration slug="library-7f3a" displayName="My Local Model" onClose={() => {}} />);
+
+    await screen.findByLabelText(/served as/i);
+    expect(screen.queryByText("/Volumes/Weights/models")).toBeNull();
+  });
+
+  it("never asks the storage authority anything", async () => {
+    const calls = withStorageAvailable();
+    render(<ModelConfiguration slug="library-7f3a" displayName="My Local Model" onClose={() => {}} />);
+
+    await screen.findByLabelText(/served as/i);
+    expect(calls.filter((c) => c.command === "model_storage")).toEqual([]);
+    expect(calls.filter((c) => c.command === "set_model_storage")).toEqual([]);
+  });
+
+  it("offers only the inputs the model's schema declares", async () => {
+    withStorageAvailable();
+    render(<ModelConfiguration slug="library-7f3a" displayName="My Local Model" onClose={() => {}} />);
+
+    await screen.findByLabelText(/served as/i);
+    const declared = MODEL_SCHEMA.fields.map((field) => field.name);
+    for (const input of screen.getAllByRole("textbox")) {
+      expect(declared).toContain(input.getAttribute("id"));
+    }
+  });
+});
+
+describe("the dialog as a dialog", () => {
+  function bare() {
+    mocked.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "model_config_schema") return MODEL_SCHEMA;
+      if (command === "model_config")
+        return { model: String((args as { slug?: string })?.slug), settings: {}, defaults: {}, effective: {}, inherited: [] };
+      if (command === "model_storage") return { download_root: "/models", available: true };
+      return { message: "ok" };
+    });
+  }
+
+  it("closes on Escape", async () => {
+    bare();
+    const onClose = vi.fn();
+    render(<ModelConfiguration slug="gpt-oss-20b" displayName="GPT-OSS 20B" onClose={onClose} />);
+    await screen.findByLabelText(/served as/i);
+
+    await userEvent.keyboard("{Escape}");
+
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("does not take the caret back when its owner re-renders", async () => {
+    // The Models page polls download state every two seconds, so it hands this
+    // dialog a fresh `onClose` on a timer. A focus effect keyed on that prop
+    // moved the caret out of the field being typed into, every poll.
+    bare();
+    const view = render(
+      <ModelConfiguration slug="gpt-oss-20b" displayName="GPT-OSS 20B" onClose={() => {}} />,
+    );
+    const field = await screen.findByLabelText(/served as/i);
+    await userEvent.type(field, "codex-local");
+    expect(document.activeElement).toBe(field);
+
+    view.rerender(
+      <ModelConfiguration slug="gpt-oss-20b" displayName="GPT-OSS 20B" onClose={() => {}} />,
+    );
+
+    expect(document.activeElement).toBe(field);
+    expect((field as HTMLInputElement).value).toBe("codex-local");
+  });
+});

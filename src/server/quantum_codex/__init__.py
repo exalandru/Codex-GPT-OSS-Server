@@ -9,7 +9,7 @@ here is meant to become a generic LLM runtime, a multi-harness adapter, or a
 model-family registry.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # The installed executable names. Canonical first: this binary controls the
 # Quantum Codex GPT-OSS Server, so it says so. `qcs` is the short alias and

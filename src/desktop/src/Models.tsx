@@ -9,6 +9,11 @@
 // and is not one: the weights are intact on a drive that happens to be
 // unplugged, and the interface has to say so rather than invite a re-download
 // of sixty gigabytes.
+//
+// The page is in two halves. Above: the models this installation has, and what
+// can be done to each. Below, behind a rule and its own heading: the three ways
+// to acquire another one. They used to be interleaved, which put "Scan roots"
+// beside "Configure…" as though scanning were something done to a model.
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -25,7 +30,7 @@ const STATES: Record<string, { label: string; tone: "ok" | "warn" | "bad" }> = {
   INCOMPATIBLE: { label: "Not GPT-OSS", tone: "bad" },
 };
 
-type Busy = "import" | "scan" | "forget" | "download" | "storage" | null;
+type Busy = "import" | "scan" | "forget" | "download" | null;
 
 export function Models() {
   const [library, setLibrary] = useState<unknown>(null);
@@ -35,7 +40,6 @@ export function Models() {
   // before the backend has answered. Cleared when the state it describes
   // actually arrives.
   const [cancelRequested, setCancelRequested] = useState(false);
-  const [storage, setStorage] = useState<Record<string, unknown> | null>(null);
   const [download, setDownload] = useState<unknown>(null);
   const [repo, setRepo] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
@@ -58,7 +62,6 @@ export function Models() {
       ]);
       setLibrary(installed);
       setCatalog((api.pick(supported, "models") as Record<string, unknown>[]) ?? []);
-      setStorage((await api.modelStorage().catch(() => null)) as Record<string, unknown> | null);
       setFailure(null);
     } catch (cause) {
       setFailure(String(cause));
@@ -136,38 +139,6 @@ export function Models() {
   return (
     <section className="panel">
       <h2>Model library</h2>
-
-      <div className="actions">
-        <button
-          disabled={busy !== null}
-          onClick={() =>
-            void act("import", async () => {
-              const chosen = await api.chooseModelDirectory();
-              // Cancelling is a decision, not a failure — but it still gets an
-              // acknowledgement, so the click never looks ignored.
-              if (!chosen) return "Import cancelled.";
-              const imported = await api.importModel(chosen);
-              return `Added ${String(api.pick(imported, "name") ?? chosen)}.`;
-            })
-          }
-        >
-          {busy === "import" ? "Choosing…" : "Import existing…"}
-        </button>
-        <button
-          disabled={busy !== null}
-          onClick={() =>
-            void act("scan", async () => {
-              const outcome = await api.scanModels();
-              const found = api.count(outcome, "found") ?? 0;
-              const added = api.count(outcome, "added") ?? 0;
-              const known = api.count(outcome, "already_known") ?? 0;
-              return `${found} model${found === 1 ? "" : "s"} found, ${added} added, ${known} already registered.`;
-            })
-          }
-        >
-          {busy === "scan" ? "Scanning…" : "Scan roots"}
-        </button>
-      </div>
 
       {result && <div className="notice notice-ok">{result}</div>}
       {failure && (
@@ -351,75 +322,119 @@ export function Models() {
         </ul>
       )}
 
-      {/* Advanced, and below the presets on purpose: the two supported models
-          are the product, and this is the escape hatch for anything else. */}
+      {/* Over the library rather than below it: what is being configured is one
+          of the rows above, and it stays on screen. */}
       {configuring && (
         <ModelConfiguration
           slug={configuring.slug}
           displayName={configuring.name}
           onClose={() => setConfiguring(null)}
+          // The list is the server's answer about these models, and a save has
+          // just changed it. Re-read rather than patch: a name assembled here
+          // from what was sent would be this view's second opinion about what
+          // the model is called, and would be wrong the moment the server
+          // normalised or refused part of it.
+          onSaved={(summary) => {
+            setResult(summary);
+            void refresh();
+          }}
         />
       )}
 
-      <hr className="divider" />
+      {/* Everything above is a model the user has; everything below is a way to
+          get another one. They were interleaved, so "Scan roots" sat beside
+          "Configure…" as though both were things you do to a model.
 
-      {/* Where downloads go. One choice for the installation -- not per profile
-          and not per model -- so it belongs beside the library rather than on
-          any card. */}
-      <div className="storage">
-        <span className="advanced-heading">Download location</span>
-        <code className="library-path">{String(storage?.download_root ?? "—")}</code>
-        <button
-          disabled={busy !== null}
-          onClick={() =>
-            void act("storage", async () => {
-              const chosen = await api.chooseModelDirectory();
-              if (!chosen) return "Unchanged.";
-              await api.setModelStorage(chosen);
-              return `Downloads will go to ${chosen}. Models already installed stay where they are.`;
-            })
-          }
-        >
-          Choose…
-        </button>
-        {storage && storage.available === false && (
-          <span className="pill pill-down">volume not mounted</span>
-        )}
-      </div>
-
-      {/* A rule between the two: where downloads go is a standing setting,
-          fetching one repository is an action. */}
+          Where downloads go is not here at all: it is one setting for the
+          installation, it belongs with the other global settings, and it lives
+          in Configuration. */}
       <hr className="divider" />
-      <h3 className="advanced-heading">Download from Hugging Face</h3>
-      <Downloader
-        status={download}
-        notice={downloadNotice}
-        repo={repo}
-        onRepoChange={setRepo}
-        busy={busy !== null}
-        onStart={() =>
-          void act("download", async () => {
-            await api.startDownload(repo);
-            await refreshDownload();
-            return `Started downloading ${repo}.`;
-          })
-        }
-        cancelling={cancelRequested || api.downloadState(download) === "CANCELLING"}
-        onCancel={() => {
-          // The optimistic flag first, so the button stops offering itself
-          // before the round trip. Then the request that actually stops the
-          // transfer — a bare `return` used to sit between these two lines,
-          // and automatic semicolon insertion made everything after it dead
-          // code: the button said "Cancelling…" forever while the download ran
-          // to completion, because the server was never told.
-          setCancelRequested(true);
-          void act("download", async () => {
-            await api.cancelDownload();
-            await refreshDownload();
-            return "Cancelling; the partial download is kept and can be resumed.";
-          });
-        }}
-      />
+      <section className="install" aria-label="Install more models">
+        <h3 className="advanced-heading">Install more models</h3>
+        <div className="install-tiles">
+          <HuggingFaceTile
+            notice={downloadNotice}
+            repo={repo}
+            onRepoChange={setRepo}
+            busy={busy !== null}
+            running={api.isDownloading(download)}
+            onStart={() =>
+              void act("download", async () => {
+                await api.startDownload(repo);
+                await refreshDownload();
+                return `Started downloading ${repo}.`;
+              })
+            }
+            cancelling={cancelRequested || api.downloadState(download) === "CANCELLING"}
+            onCancel={() => {
+              // The optimistic flag first, so the button stops offering itself
+              // before the round trip. Then the request that actually stops the
+              // transfer — a bare `return` used to sit between these two lines,
+              // and automatic semicolon insertion made everything after it dead
+              // code: the button said "Cancelling…" forever while the download
+              // ran to completion, because the server was never told.
+              setCancelRequested(true);
+              void act("download", async () => {
+                await api.cancelDownload();
+                await refreshDownload();
+                return "Cancelling; the partial download is kept and can be resumed.";
+              });
+            }}
+          />
+
+          <div className="install-tile">
+            <h4 className="install-title">Import existing</h4>
+            <p className="catalog-note">
+              Use a GPT-OSS model already on this machine. Its files stay where they are.
+            </p>
+            <div className="actions">
+              <button
+                disabled={busy !== null}
+                onClick={() =>
+                  void act("import", async () => {
+                    const chosen = await api.chooseModelDirectory();
+                    // Cancelling is a decision, not a failure — but it still
+                    // gets an acknowledgement, so the click never looks ignored.
+                    if (!chosen) return "Import cancelled.";
+                    const imported = await api.importModel(chosen);
+                    return `Added ${String(api.pick(imported, "name") ?? chosen)}.`;
+                  })
+                }
+              >
+                {busy === "import" ? "Choosing…" : "Choose folder…"}
+              </button>
+            </div>
+          </div>
+
+          <div className="install-tile">
+            <h4 className="install-title">Scan roots</h4>
+            <p className="catalog-note">
+              Search the model library roots this installation is already configured with.
+            </p>
+            <div className="actions">
+              <button
+                disabled={busy !== null}
+                onClick={() =>
+                  void act("scan", async () => {
+                    const outcome = await api.scanModels();
+                    const found = api.count(outcome, "found") ?? 0;
+                    const added = api.count(outcome, "added") ?? 0;
+                    const known = api.count(outcome, "already_known") ?? 0;
+                    return `${found} model${found === 1 ? "" : "s"} found, ${added} added, ${known} already registered.`;
+                  })
+                }
+              >
+                {busy === "scan" ? "Scanning…" : "Scan"}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Below the row rather than inside the Hugging Face tile: a transfer in
+            flight is a condition of the installation, and a progress bar squeezed
+            into a third of the width is harder to read for no gain. */}
+        <DownloadStatus status={download} />
+      </section>
     </section>
   );
 }
@@ -507,51 +522,51 @@ function ModelRow({
 }
 
 
-/** Fetching weights from Hugging Face. */
-function Downloader({
-  status,
+/** Fetching weights from Hugging Face: the controls only.
+ *
+ * Whether a transfer is running is passed in rather than recomputed, so this
+ * tile and the catalogue cards cannot disagree about it.
+ */
+function HuggingFaceTile({
   notice,
   repo,
   onRepoChange,
   busy,
+  running,
   onStart,
   onCancel,
   cancelling,
 }: {
-  status: unknown;
   notice: string | null;
   repo: string;
   onRepoChange: (value: string) => void;
   busy: boolean;
+  running: boolean;
   onStart: () => void;
   onCancel: () => void;
   /** Cancellation has been requested; the transfer has not necessarily
    *  stopped. The button must not offer itself again meanwhile. */
   cancelling: boolean;
 }) {
-  // The same reader the rest of the view uses, so this panel and the catalogue
-  // cards cannot disagree about whether a transfer is running.
-  const active = api.activeDownload(status);
-  const last = api.pick(status, "last") as Record<string, unknown> | null;
-  const current = active ?? last;
-  const running = active !== null;
-
-  const fraction = api.count(current, "fraction");
-
   return (
-    <div className="downloader">
+    <div className="install-tile">
+      <h4 className="install-title">Download from Hugging Face</h4>
       {/* A missing server is a condition to explain, not an error to alarm
           about: everything else on this view works without one. */}
-      {notice && <p className="library-detail">{notice}</p>}
+      {notice && <p className="catalog-note">{notice}</p>}
+      <label className="install-label" htmlFor="hf-repo">
+        Repository ID
+      </label>
+      <input
+        id="hf-repo"
+        className="repo-input"
+        value={repo}
+        spellCheck={false}
+        onChange={(event) => onRepoChange(event.target.value)}
+        placeholder="Paste the HugginFace ID"
+        disabled={running}
+      />
       <div className="actions">
-        <input
-          className="repo-input"
-          value={repo}
-          spellCheck={false}
-          onChange={(event) => onRepoChange(event.target.value)}
-          placeholder="Paste the HugginFace ID"
-          disabled={running}
-        />
         {/* Deliberately not disabled by `notice`. The notice means the daemon
             is unreachable, and starting a download is exactly what starts it
             (`daemon::ensure_running`). Disabling here made that whole path
@@ -569,39 +584,49 @@ function Downloader({
           </button>
         )}
       </div>
+    </div>
+  );
+}
 
-      {current && (
-        <div className="download-status">
-          <div className="download-head">
-            <code>{String(current.repo)}</code>
-            <span className="pill pill-warn">{String(current.state)}</span>
-          </div>
+/** What the transfer is doing, active or last finished. */
+function DownloadStatus({ status }: { status: unknown }) {
+  const active = api.activeDownload(status);
+  const last = api.pick(status, "last") as Record<string, unknown> | null;
+  const current = active ?? last;
+  if (!current) return null;
 
-          {/* Only drawn when the server reported a total. A bar with an
-              invented denominator is worse than no bar. */}
-          {fraction !== undefined ? (
-            <div className="bar">
-              <div className="bar-fill" style={{ width: `${fraction * 100}%` }} />
-            </div>
-          ) : (
-            <p className="library-detail">
-              This repository does not publish file sizes, so there is no total to
-              measure against.
-            </p>
-          )}
+  const fraction = api.count(current, "fraction");
 
-          <p className="library-detail">
-            {api.bytes(api.count(current, "downloaded_bytes"))}
-            {current.total_bytes ? ` of ${api.bytes(api.count(current, "total_bytes"))}` : ""}
-            {current.bytes_per_second
-              ? ` · ${api.bytes(api.count(current, "bytes_per_second"))}/s`
-              : ""}
-            {current.eta_seconds ? ` · ${api.duration(api.count(current, "eta_seconds"))} left` : ""}
-          </p>
+  return (
+    <div className="download-status">
+      <div className="download-head">
+        <code>{String(current.repo)}</code>
+        <span className="pill pill-warn">{String(current.state)}</span>
+      </div>
 
-          {current.detail ? <p className="library-detail">{String(current.detail)}</p> : null}
+      {/* Only drawn when the server reported a total. A bar with an invented
+          denominator is worse than no bar. */}
+      {fraction !== undefined ? (
+        <div className="bar">
+          <div className="bar-fill" style={{ width: `${fraction * 100}%` }} />
         </div>
+      ) : (
+        <p className="library-detail">
+          This repository does not publish file sizes, so there is no total to measure
+          against.
+        </p>
       )}
+
+      <p className="library-detail">
+        {api.bytes(api.count(current, "downloaded_bytes"))}
+        {current.total_bytes ? ` of ${api.bytes(api.count(current, "total_bytes"))}` : ""}
+        {current.bytes_per_second
+          ? ` · ${api.bytes(api.count(current, "bytes_per_second"))}/s`
+          : ""}
+        {current.eta_seconds ? ` · ${api.duration(api.count(current, "eta_seconds"))} left` : ""}
+      </p>
+
+      {current.detail ? <p className="library-detail">{String(current.detail)}</p> : null}
     </div>
   );
 }

@@ -136,7 +136,6 @@ pre {
 .pill-bad { background: rgba(248, 113, 113, 0.15); color: var(--down); }
 
 /* Downloads. */
-.downloader { margin-top: 14px; }
 .repo-input {
   flex: 1; min-width: 260px; background: #12141a; color: var(--text);
   border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px;
@@ -219,14 +218,23 @@ button.primary { border-color: #0e7490; color: #7dd3fc; }
   color: var(--muted, #9aa1ad); }
 
 
-/* The operational summary: Server / Model / Inference, then Capabilities and
-   Prompt cache. Capped at three columns so a wide window does not spread five
-   cards into a single unreadable row. */
+/* The operational summary: Current session / Performance / Model capabilities.
+   Three across when there is room, then two, then one — pinned by breakpoint as
+   well as by `auto-fit` so the count is the same at a given width whatever the
+   card contents measure.
+
+   `minmax(0, 1fr)` rather than `1fr`, and it is load-bearing. `1fr` is
+   `minmax(auto, 1fr)`, so a track's floor is its content's min-content width —
+   one card holding a long filesystem path and a wide row therefore claimed
+   ~600px of a 1100px row and left the other two at ~130px each, wrapping
+   "Ready" down the column one letter at a time. Measured in Safari at 1300px.
+   A zero floor makes the three shares actually equal and moves the overflow
+   decision into the cards, where truncation and wrapping are handled. */
 @media (min-width: 1000px) {
-  .grid { grid-template-columns: repeat(3, 1fr); }
+  .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (min-width: 660px) and (max-width: 999px) {
-  .grid { grid-template-columns: repeat(2, 1fr); }
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 
@@ -281,3 +289,151 @@ main:has(> .panel.logs) {
 
 .storage { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-bottom: 18px; }
+
+/* The configuration dialog. Over the library rather than below it, so the row
+   being configured stays where the user left it. */
+.modal-scrim {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 55%);
+}
+.modal-panel {
+  /* Bounded by the viewport and scrolled internally: the model form grows with
+     the schema, and a dialog taller than the window cannot be dismissed. */
+  width: min(560px, 100%); max-height: min(80vh, 100%); overflow-y: auto;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
+}
+/* Ways to get another model, kept apart from the models you have. Three peers,
+   so they are laid out as peers — the same auto-fit the catalogue uses, which is
+   what makes them collapse to two and then one column at the same widths. */
+/* No `align-items`, so the default `stretch` applies and every tile in a row is
+   as tall as the tallest — three descriptions of different lengths were
+   otherwise three different card heights. Nothing is measured or hard-coded:
+   the row's height is whatever its content needs, and the tiles take it. */
+.install-tiles {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.install-tile {
+  border: 1px solid var(--line, #2b2f38); border-radius: 8px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.install-title { margin: 0; font-size: 0.95rem; font-weight: 600; }
+.install-label { font-size: 11px; font-weight: 500; color: var(--muted, #9aa1ad); }
+/* The input's flex sizing belongs to the old action row; in a tile it is one
+   column wide, and a 260px floor would push the grid past the window. */
+.install-tile .repo-input { width: 100%; min-width: 0; }
+/* The action is the last thing in every tile, so pinning it to the bottom of a
+   stretched tile puts Download, Choose folder… and Scan on one line. */
+.install-tile .actions { margin: auto 0 0; }
+
+/* A card of its own, not a region inside the profile card. Storage is global —
+   it belongs to no profile — and a divider inside someone else's container is
+   not enough to say so. Same `.panel` language as every other section on the
+   page; only the gap between the two cards is added here. */
+.model-storage { margin-top: 12px; }
+.model-storage .setting { margin-bottom: 0; }
+.model-storage .storage { margin-bottom: 0; }
+.model-storage .library-path { display: inline-block; }
+
+
+/* -- The dashboard ----------------------------------------------------------
+ *
+ * The complaint this answers: five cards of key/value rows, every value the
+ * same size, so finding out whether the server was up cost the same scan as
+ * finding the eviction count. The fix is hierarchy, not decoration — there are
+ * no new colours here, and the only tokens used are the ones the header pill
+ * and the rest of the app already use.
+ *
+ * Each card is a column so that a grid row of equal-height cards has its
+ * contents distributed rather than bunched at the top, which is what made the
+ * old empty space read as accidental. */
+.dash { display: flex; flex-direction: column; gap: 12px; }
+.dash h2 { margin-bottom: 0; }
+
+/* Title left, status badge right, on one line. The badge used to sit above the
+   lead, where it was a line of height only the first card had — so that card's
+   primary value started below the other two and the row read as ragged. Here it
+   shares the heading's line and costs nothing. `min-width: 0` on the title lets
+   a long heading shrink rather than push the badge out of the card. */
+.dash-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; min-height: 20px;
+}
+.dash-head h2 { min-width: 0; }
+.dash-head .pill { flex: 0 0 auto; }
+
+/* The one dominant thing per card, plus whatever else belongs above the rows.
+   The floor is what makes the three cards' detail blocks start on the same
+   line: without it the card carrying an activity line pushed its rows below its
+   neighbours', and three lists starting at three heights is the untidiness this
+   redesign is for. It is a floor, not a height — a model name long enough to
+   wrap still gets its second line. */
+.dash-lead {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  min-height: 76px;
+}
+.dash-value {
+  margin: 0; font-size: 24px; line-height: 1.15; font-weight: 600;
+  letter-spacing: -0.4px; font-variant-numeric: tabular-nums;
+  /* A long model name shrinks the line rather than the column: the grid track
+     is shared with two other cards and must not be widened by one string. */
+  overflow-wrap: anywhere;
+}
+/* An absent subject is stated at the same position as a value, in the weight of
+   something that is not a reading. */
+.dash-value-quiet { font-size: 16px; font-weight: 500; color: var(--muted); }
+.dash-caption { margin: 0; color: var(--muted); font-size: 12px; }
+/* Said once, in place of a column of dashes for facts nobody has answered. */
+.dash-note { margin: 0; color: var(--muted); font-size: 12px; }
+
+/* Activity. Quiet at rest, and one step brighter when something is in flight —
+   that difference is the whole mechanism; there is no animation. */
+.dash-activity {
+  margin: 0; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.dash-activity.is-busy { color: var(--accent); font-weight: 600; }
+.dash-dot { margin: 0 6px; opacity: 0.5; }
+
+/* Secondary rows. Hairlines between them rather than a table border, labels
+   receding, values carrying the scan.
+
+   No column *gap*: the separator is drawn by the two cells' own top borders, and
+   a gap between them cut the hairline in half with a notch in the middle of
+   every row. The space between label and value is padding on the cells instead,
+   so the rule runs unbroken across the card. */
+.metrics {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0;
+  margin: 0; font-size: 12px;
+}
+.metrics dt, .metrics dd { padding: 6px 0; border-top: 1px solid var(--line); }
+.metrics > :nth-child(1), .metrics > :nth-child(2) { border-top: none; padding-top: 0; }
+.metrics dt { color: var(--muted); font-weight: 400; padding-right: 12px; }
+.metrics dd {
+  margin: 0; padding-left: 12px; text-align: right;
+  color: var(--text); font-weight: 500;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.metrics dd.mono { font-family: ui-monospace, "SF Mono", monospace; font-size: 11px; }
+
+/* The filesystem path: last, quietest, and one line whatever its length, so it
+   can never be the thing that decides how tall the card is. The full value is
+   on the element's `title`. */
+.dash-path {
+  margin: auto 0 0; padding-top: 10px; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 11px;
+  font-family: ui-monospace, "SF Mono", monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dash-path-empty { font-family: inherit; white-space: normal; }
+
+/* The control bar: three groups told apart by space, not by boxes. */
+.controlbar {
+  display: flex; gap: 8px 22px; flex-wrap: wrap; align-items: center;
+  margin-bottom: 18px;
+}
+.control-group { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Pushed to the far end on a wide bar, and first in line to wrap on a narrow
+   one, which is where a workflow action belongs in both. */
+.control-cta { margin-left: auto; }

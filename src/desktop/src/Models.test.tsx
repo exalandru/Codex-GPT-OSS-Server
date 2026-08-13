@@ -664,3 +664,363 @@ describe("the empty-state under the catalogue", () => {
     expect(screen.getAllByRole("button", { name: "Locate…" })).toHaveLength(2);
   });
 });
+
+/** Configuring a model, over the library rather than below it.
+ *
+ * The store here is the server: `set_model_config` writes to it and
+ * `model_catalog` is answered *from* it. That is what makes the display-name
+ * test discriminating -- a card that renders the name the form sent, or one
+ * that never re-reads the catalogue, both fail.
+ */
+describe("the configuration dialog", () => {
+  const SCHEMA = {
+    version: 1,
+    groups: [{ id: "basic", label: "Basic", help: "" }],
+    fields: [
+      { name: "display_name", label: "Display name", kind: "string", group: "basic", help: "" },
+      { name: "served_model_name", label: "Served as", kind: "string", group: "basic", help: "" },
+    ],
+  };
+
+  /** The library as the server would report it, from the stored overrides. */
+  function server(options: { refuse?: string } = {}) {
+    const store: Record<string, Record<string, string>> = {};
+    const model = installed("my-own-gpt-oss");
+    const calls: { command: string; args?: unknown }[] = [];
+
+    const entry = () => ({
+      id: "library-7f3a",
+      slug: "my-own-gpt-oss",
+      display_name: store["library-7f3a"]?.display_name ?? "my-own-gpt-oss",
+      served_name: store["library-7f3a"]?.served_model_name ?? "my-own-gpt-oss",
+      supported: false,
+      installed: true,
+      model,
+    });
+
+    mocked.mockImplementation(async (command: string, args?: unknown) => {
+      calls.push({ command, args });
+      const slug = String((args as { slug?: string } | undefined)?.slug);
+      if (command === "model_catalog") return { models: [entry()] };
+      if (command === "list_models") return { models: [model], roots: [] };
+      if (command === "download_status") return { state: "idle" };
+      if (command === "model_config_schema") return SCHEMA;
+      if (command === "model_storage")
+        return { download_root: "/Volumes/Weights/models", available: true };
+      if (command === "choose_model_directory") return "/Volumes/Other/models";
+      if (command === "set_model_storage") return { message: "ok" };
+      if (command === "set_model_config") {
+        if (options.refuse) throw new Error(options.refuse);
+        const current = { ...(store[slug] ?? {}) };
+        for (const assignment of (args as { assignments?: string[] }).assignments ?? []) {
+          const at = assignment.indexOf("=");
+          const [name, value] = [assignment.slice(0, at), assignment.slice(at + 1)];
+          if (value === "") delete current[name];
+          else current[name] = value;
+        }
+        store[slug] = current;
+        return { model: slug, settings: current };
+      }
+      if (command === "model_config") {
+        const overrides = store[slug] ?? {};
+        return { model: slug, settings: overrides, defaults: {}, effective: { ...overrides }, inherited: [] };
+      }
+      return { message: "ok" };
+    });
+    return { store, calls };
+  }
+
+  async function openConfigure() {
+    const list = await screen.findByRole("list", { name: /other installed models/i });
+    await userEvent.click(within(list).getByRole("button", { name: "Configure…" }));
+    return screen.findByRole("dialog");
+  }
+
+  it("opens a dialog over the page rather than an inline section", async () => {
+    server();
+    render(<Models />);
+
+    // Nothing before the click: the editor is not part of the page's flow.
+    await screen.findByRole("list", { name: /other installed models/i });
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    const dialog = await openConfigure();
+
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.getAttribute("aria-label")).toMatch(/settings/i);
+    // The library it belongs to is still on screen behind it.
+    expect(screen.getByRole("list", { name: /other installed models/i })).toBeTruthy();
+  });
+
+  it("edits an imported model by its stable library id", async () => {
+    const { calls } = server();
+    render(<Models />);
+    await openConfigure();
+
+    expect(calls.filter((c) => c.command === "model_config")).toEqual([
+      { command: "model_config", args: { slug: "library-7f3a" } },
+    ]);
+  });
+
+  it("shows the new display name on the card as soon as the save lands", async () => {
+    // The regression: the value persisted, the dialog closed, and the card kept
+    // the name the catalogue had been read with. It took a tab switch -- a
+    // remount -- to show the truth.
+    server();
+    render(<Models />);
+    const list = await screen.findByRole("list", { name: /other installed models/i });
+    expect(within(list).getByText("my-own-gpt-oss", { selector: "strong" })).toBeTruthy();
+
+    await openConfigure();
+    await userEvent.type(screen.getByLabelText(/display name/i), "Fable 120B");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await within(list).findByText("Fable 120B", { selector: "strong" })).toBeTruthy();
+    expect(within(list).queryByText("my-own-gpt-oss", { selector: "strong" })).toBeNull();
+  });
+
+  it("shows the new served name where the served name is shown", async () => {
+    server();
+    render(<Models />);
+    const list = await screen.findByRole("list", { name: /other installed models/i });
+
+    await openConfigure();
+    await userEvent.type(screen.getByLabelText(/served as/i), "codex-local");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(await within(list).findByText("codex-local")).toBeTruthy();
+  });
+
+  it("keeps the stable id across a rename of either name", async () => {
+    const { store, calls } = server();
+    render(<Models />);
+
+    await openConfigure();
+    await userEvent.type(screen.getByLabelText(/display name/i), "Renamed");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await openConfigure();
+
+    // Same id before and after; the settings never moved to a name-shaped key.
+    expect(Object.keys(store)).toEqual(["library-7f3a"]);
+    for (const call of calls.filter((c) => c.command.endsWith("model_config"))) {
+      expect((call.args as { slug: string }).slug).toBe("library-7f3a");
+    }
+  });
+
+  it("writes nothing when it is closed without saving", async () => {
+    const { store, calls } = server();
+    render(<Models />);
+    await openConfigure();
+
+    await userEvent.type(screen.getByLabelText(/display name/i), "Never saved");
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.some((c) => c.command === "set_model_config")).toBe(false);
+    expect(store).toEqual({});
+  });
+
+  it("opens for a built-in model too, keyed by its own id", async () => {
+    // Presets are configurable for the same reason imports are: served name and
+    // reasoning effort are theirs. The dialog is reached from the card.
+    const local = installed("gpt-oss-20b-mxfp4-bf16");
+    respond([{ ...preset("gpt-oss-20b", "GPT-OSS 20B", local), id: "gpt-oss-20b" }], [local]);
+    render(<Models />);
+
+    const cards = await screen.findByRole("list", { name: /supported models/i });
+    await userEvent.click(within(cards).getByRole("button", { name: "Configure…" }));
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    await waitFor(() =>
+      expect(mocked).toHaveBeenCalledWith("model_config", { slug: "gpt-oss-20b" }),
+    );
+  });
+
+  it("stays open, with the server's words, when a value is refused", async () => {
+    server({ refuse: "served name 'codex-local' is claimed by 'gpt-oss-20b'" });
+    render(<Models />);
+    await openConfigure();
+
+    await userEvent.type(screen.getByLabelText(/served as/i), "codex-local");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText(/is claimed by/)).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    // And the refused value is still in the form to be corrected.
+    expect((screen.getByLabelText(/served as/i) as HTMLInputElement).value).toBe("codex-local");
+  });
+});
+
+describe("where downloads go", () => {
+  it("is not a control on the Models page itself", async () => {
+    respond([preset("gpt-oss-20b", "GPT-OSS 20B")]);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    expect(screen.queryByText(/download location/i)).toBeNull();
+    expect(mocked).not.toHaveBeenCalledWith("model_storage", expect.anything());
+  });
+
+  it("is not reachable through the configure dialog either", async () => {
+    // It is global, so it belongs with the global settings. Reaching it from a
+    // dialog named after one model is what made it look like the model's.
+    const other = installed("some-other-model");
+    respond(
+      [
+        {
+          id: "library-7f3a",
+          slug: "some-other-model",
+          display_name: "My Local Model",
+          supported: false,
+          installed: true,
+          model: other,
+        },
+      ],
+      [other],
+    );
+    render(<Models />);
+
+    const list = await screen.findByRole("list", { name: /other installed models/i });
+    await userEvent.click(within(list).getByRole("button", { name: "Configure…" }));
+    const dialog = await screen.findByRole("dialog");
+
+    expect(within(dialog).queryByText(/download location/i)).toBeNull();
+    expect(mocked).not.toHaveBeenCalledWith("model_storage", expect.anything());
+    expect(mocked).not.toHaveBeenCalledWith("model_storage");
+  });
+});
+
+/** The catalogue is what you have; installing is how you get more.
+ *
+ * Before this, "Import existing…" and "Scan roots" sat in the same action row a
+ * user reaches for after picking a model, and the Hugging Face field trailed the
+ * page with no heading tying the three together. The property these hold is not
+ * "the section exists": it is that each acquisition control is inside it and
+ * none of them is inside the catalogue.
+ */
+describe("install more models", () => {
+  const both = [preset("gpt-oss-20b", "GPT-OSS 20B"), preset("gpt-oss-120b", "GPT-OSS 120B")];
+
+  function install(): HTMLElement {
+    return screen.getByRole("region", { name: /install more models/i });
+  }
+
+  it("gives the acquisition workflows a section of their own", async () => {
+    respond(both);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    expect(install()).toBeTruthy();
+  });
+
+  it("puts the Hugging Face download in it", async () => {
+    respond(both);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    const section = within(install());
+    expect(section.getByLabelText(/repository id/i)).toBeTruthy();
+    expect(section.getByPlaceholderText(/HugginFace ID/i)).toBeTruthy();
+    expect(section.getByRole("button", { name: "Download" })).toBeTruthy();
+  });
+
+  it("puts Import existing in it", async () => {
+    respond(both);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    const section = within(install());
+    expect(section.getByText(/import existing/i)).toBeTruthy();
+    expect(section.getByRole("button", { name: /choose folder/i })).toBeTruthy();
+  });
+
+  it("puts Scan roots in it", async () => {
+    respond(both);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    const section = within(install());
+    expect(section.getByText(/scan roots/i)).toBeTruthy();
+    expect(section.getByRole("button", { name: "Scan" })).toBeTruthy();
+  });
+
+  it("keeps every one of them out of the catalogue", async () => {
+    // Containment in both directions: the acquisition controls are not among
+    // the cards, and no card's own actions leaked into the section.
+    respond(both);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    const catalog = within(screen.getByRole("list", { name: /supported models/i }));
+    expect(catalog.queryByPlaceholderText(/HugginFace ID/i)).toBeNull();
+    expect(catalog.queryByRole("button", { name: /choose folder/i })).toBeNull();
+    expect(catalog.queryByRole("button", { name: "Scan" })).toBeNull();
+
+    const section = within(install());
+    expect(section.queryByText("GPT-OSS 20B")).toBeNull();
+    expect(section.queryByRole("button", { name: "Locate…" })).toBeNull();
+    expect(section.queryByRole("button", { name: "Configure…" })).toBeNull();
+  });
+
+  it("puts the three tiles in one stretching row, so none is shorter than another", async () => {
+    // Equal height is CSS, but it only works if the three tiles are siblings of
+    // one grid container: a tile nested a level deeper, or a wrapper around one
+    // of them, sizes itself and the row goes ragged again. That is the
+    // structural precondition, and it is what this asserts.
+    respond(both);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    const row = install().querySelector(".install-tiles")!;
+    expect(row.querySelectorAll(":scope > .install-tile")).toHaveLength(3);
+    expect(row.querySelectorAll(".install-tile")).toHaveLength(3);
+  });
+
+  it("ends every tile with its action, so the buttons share a line", async () => {
+    // `margin-top: auto` on the action row is what pulls the buttons to the
+    // bottom of a stretched tile. It can only do that if the action really is
+    // the last thing in each tile.
+    respond(both);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    for (const tile of install().querySelectorAll(".install-tile")) {
+      const last = tile.lastElementChild!;
+      expect(last.className).toContain("actions");
+      expect(last.querySelector("button")).toBeTruthy();
+    }
+  });
+
+  it("sits below the catalogue, not among it", async () => {
+    respond(both);
+    render(<Models />);
+
+    const card = await screen.findByText("GPT-OSS 120B");
+    // DOCUMENT_POSITION_FOLLOWING: the whole section comes after the last card.
+    expect(card.compareDocumentPosition(install()) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  it("still imports and scans through the same backend commands", async () => {
+    mocked.mockImplementation(async (command: string) => {
+      if (command === "model_catalog") return { models: both };
+      if (command === "list_models") return { models: [], roots: [] };
+      if (command === "download_status") return { state: "idle" };
+      if (command === "choose_model_directory") return "/models/my-own-gpt-oss";
+      return { message: "ok" };
+    });
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS 20B");
+    await userEvent.click(within(install()).getByRole("button", { name: /choose folder/i }));
+    await waitFor(() =>
+      expect(mocked).toHaveBeenCalledWith("import_model", { path: "/models/my-own-gpt-oss" }),
+    );
+
+    await userEvent.click(within(install()).getByRole("button", { name: "Scan" }));
+    await waitFor(() => expect(mocked).toHaveBeenCalledWith("scan_models"));
+  });
+});

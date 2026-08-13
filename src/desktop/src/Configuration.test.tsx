@@ -161,3 +161,158 @@ describe("lifecycle actions", () => {
     expect((field as HTMLInputElement).value).toBe("dev");
   });
 });
+
+/** Where downloaded weights are written: one choice for the installation.
+ *
+ * It lives here because it is global, and the discriminating property is not
+ * that a control appears on this view — it is that changing it goes to the
+ * storage authority and creates no profile or per-model setting anywhere.
+ */
+describe("model storage", () => {
+  const dev = { name: "dev", port: 8123 };
+
+  function withStorage(
+    storage: Record<string, unknown> = { download_root: "/Volumes/Weights/models", available: true },
+  ) {
+    const calls: { command: string; args?: unknown }[] = [];
+    // A store, so the read after a change is answered from what was written
+    // rather than from a constant. A view that showed its own optimistic copy
+    // would pass against a constant and fail here.
+    let current = { ...storage };
+    mocked.mockImplementation(async (command: string, args?: unknown) => {
+      calls.push({ command, args });
+      if (command === "profile_schema") return SCHEMA;
+      if (command === "profiles") return { default: "dev", profiles: [dev] };
+      if (command === "model_storage") return current;
+      if (command === "choose_model_directory") return "/Volumes/Other/models/";
+      if (command === "set_model_storage") {
+        // Stored as the server would: normalised, not as it was handed in. That
+        // is what makes the reload assertion discriminating — a view showing its
+        // own optimistic copy of the chosen path would display the trailing
+        // slash the server dropped.
+        current = {
+          ...current,
+          download_root: (args as { path: string }).path.replace(/\/+$/, ""),
+        };
+        return current;
+      }
+      return { message: "ok" };
+    });
+    return calls;
+  }
+
+  it("shows the global download location the storage authority reports", async () => {
+    withStorage();
+    render(<Configuration serverRunning={false} />);
+
+    const section = await screen.findByRole("region", { name: /model storage/i });
+    expect(within(section).getByText(/download location/i)).toBeTruthy();
+    expect(await within(section).findByText("/Volumes/Weights/models")).toBeTruthy();
+    expect(within(section).getByText(/global location used for downloaded models/i)).toBeTruthy();
+    expect(within(section).getByText(/imported models are left in their original location/i))
+      .toBeTruthy();
+  });
+
+  it("is a card of its own rather than a region inside the profile card", async () => {
+    // A divider inside someone else's container still reads as that container's
+    // last section. Storage belongs to no profile, so it is a sibling panel and
+    // sits outside the one the profile form draws.
+    withStorage();
+    render(<Configuration serverRunning={false} />);
+
+    const section = await screen.findByRole("region", { name: /model storage/i });
+    expect(section.className).toContain("panel");
+    expect(section.closest(".panel")).toBe(section);
+
+    const profileCard = [...document.querySelectorAll(".panel")].find((p) => p !== section)!;
+    expect(profileCard.contains(section)).toBe(false);
+    // And it carries its own heading, in the page's own card language.
+    expect(within(section).getByRole("heading", { name: /model storage/i })).toBeTruthy();
+  });
+
+  it("changes it through the global storage command", async () => {
+    const calls = withStorage();
+    render(<Configuration serverRunning={false} />);
+
+    const section = await screen.findByRole("region", { name: /model storage/i });
+    await userEvent.click(within(section).getByRole("button", { name: "Choose…" }));
+
+    await waitFor(() =>
+      expect(calls.find((c) => c.command === "set_model_storage")?.args).toEqual({
+        path: "/Volumes/Other/models/",
+      }),
+    );
+  });
+
+  it("writes no per-model and no profile setting when it changes", async () => {
+    // The discriminating half. A path stored as a model override or a profile
+    // field would be a second authority for the same fact.
+    const calls = withStorage();
+    render(<Configuration serverRunning={false} />);
+
+    const section = await screen.findByRole("region", { name: /model storage/i });
+    await userEvent.click(within(section).getByRole("button", { name: "Choose…" }));
+
+    await waitFor(() => expect(calls.some((c) => c.command === "set_model_storage")).toBe(true));
+    expect(calls.filter((c) => c.command === "set_model_config")).toEqual([]);
+    expect(calls.filter((c) => c.command === "set_profile")).toEqual([]);
+  });
+
+  it("shows the new location by re-reading the setting, not its own copy", async () => {
+    withStorage();
+    render(<Configuration serverRunning={false} />);
+
+    const section = await screen.findByRole("region", { name: /model storage/i });
+    await within(section).findByText("/Volumes/Weights/models");
+    await userEvent.click(within(section).getByRole("button", { name: "Choose…" }));
+
+    // The server's normalised answer, not the path the picker returned.
+    expect(await within(section).findByText("/Volumes/Other/models")).toBeTruthy();
+    expect(within(section).queryByText("/Volumes/Other/models/")).toBeNull();
+  });
+
+  it("leaves the location alone when the picker is cancelled", async () => {
+    // The counterexample: choosing is not the same as having chosen, and a
+    // dismissed picker must not write anything.
+    const calls: { command: string; args?: unknown }[] = [];
+    mocked.mockImplementation(async (command: string, args?: unknown) => {
+      calls.push({ command, args });
+      if (command === "profile_schema") return SCHEMA;
+      if (command === "profiles") return { default: "dev", profiles: [dev] };
+      if (command === "model_storage")
+        return { download_root: "/Volumes/Weights/models", available: true };
+      if (command === "choose_model_directory") return null;
+      return { message: "ok" };
+    });
+    render(<Configuration serverRunning={false} />);
+
+    const section = await screen.findByRole("region", { name: /model storage/i });
+    await userEvent.click(within(section).getByRole("button", { name: "Choose…" }));
+
+    await waitFor(() => expect(calls.some((c) => c.command === "choose_model_directory")).toBe(true));
+    expect(calls.filter((c) => c.command === "set_model_storage")).toEqual([]);
+    expect(within(section).getByText("/Volumes/Weights/models")).toBeTruthy();
+  });
+
+  it("says when the volume holding it is not attached", async () => {
+    withStorage({ download_root: "/Volumes/Weights/models", available: false });
+    render(<Configuration serverRunning={false} />);
+
+    const section = await screen.findByRole("region", { name: /model storage/i });
+    expect(await within(section).findByText(/not mounted/i)).toBeTruthy();
+  });
+
+  it("is still reachable when the server cannot describe its profiles", async () => {
+    // Storage has its own command and does not depend on the profile schema.
+    mocked.mockImplementation(async (command: string) => {
+      if (command === "profile_schema") throw new Error("no server is running");
+      if (command === "model_storage")
+        return { download_root: "/Volumes/Weights/models", available: true };
+      return { message: "ok" };
+    });
+    render(<Configuration serverRunning={false} />);
+
+    const section = await screen.findByRole("region", { name: /model storage/i });
+    expect(await within(section).findByText("/Volumes/Weights/models")).toBeTruthy();
+  });
+});
