@@ -174,14 +174,17 @@ def test_the_readme_quotes_the_provider_id_this_build_emits() -> None:
 def test_the_readme_does_not_still_document_a_provider_id_nothing_emits() -> None:
     # The other direction, which is the half that actually broke: the README can
     # name every current key and still carry the previous ones beside them.
+    #
+    # `model_providers.<id>` is written two ways -- as a `-c` override key and as
+    # a TOML table header, `[model_providers.qcs]` -- so the id is read as a bare
+    # TOML key rather than by splitting on the dot that follows it. There is no
+    # such dot in a table header, and splitting took the `]` along: the generator
+    # of the fragment failed its own check.
+    import re
+
     from quantum_codex.codex.launch import PROVIDER_ID
 
-    readme = _readme()
-    quoted = {
-        line.split("model_providers.", 1)[1].split(".", 1)[0]
-        for line in readme.splitlines()
-        if "model_providers." in line
-    }
+    quoted = set(re.findall(r"model_providers\.([A-Za-z0-9_-]+)", _readme()))
 
     assert quoted == {PROVIDER_ID}, f"the README documents provider ids {quoted - {PROVIDER_ID}}"
 
