@@ -29,7 +29,7 @@ function running(lifecycle: Record<string, unknown>, overrides: Record<string, u
           {
             slug: "gpt-oss-20b",
             display_name: "gpt-oss-20b",
-            supported: true,
+            tier: "stock",
             installed: true,
             model: { name: "gpt-oss-20b-mxfp4-bf16", state: "READY" },
           },

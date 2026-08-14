@@ -34,7 +34,7 @@ function entry(slug: string, state: string | null) {
   return {
     slug,
     display_name: slug,
-    supported: true,
+    tier: "stock",
     installed: state !== null,
     model: state === null ? null : { name: `${slug}-mxfp4-bf16`, state },
   };

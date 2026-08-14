@@ -489,7 +489,7 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
     from .library.catalog import defaults_for, display_name_for
     from .library.registry import load_registry
     from .model_settings import ModelSettings, load_model_settings, save_model_settings
-    from .models import resolve_served_catalogue, resolved_model_names, slug_for
+    from .models import resolve_served_catalogue, resolved_model_names
     from .profile_schema import (
         MODEL_FIELDS,
         coerce_model,
@@ -505,7 +505,7 @@ def _cmd_models_config(args: argparse.Namespace) -> int:
         names = resolved_model_names(report, overrides=settings.overrides)
         if args.slug == names.library_id:
             exact_matches.append((report, names))
-        elif args.slug in {names.served_name, slug_for(report.entry.name)}:
+        elif args.slug in {names.served_name, names.catalog_slug}:
             alias_matches.append((report, names))
     matches = exact_matches or alias_matches
     if not matches:
@@ -802,7 +802,7 @@ def _cmd_models_import(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     from .library import load_registry, save_registry
-    from .models import slug_for
+    from .library.catalog import catalog_slug_for
 
     expected = getattr(args, "expect", None)
     if expected:
@@ -812,7 +812,7 @@ def _cmd_models_import(args: argparse.Namespace) -> int:
         #
         # Identity is decided here, on the same rule the catalogue reconciles
         # with, so "is this the 120B?" has one answer in the whole product.
-        found = slug_for(Path(args.path).expanduser().resolve().name)
+        found = catalog_slug_for(Path(args.path).expanduser().resolve().name)
         if found != expected:
             raise ConfigError(
                 f"that directory is {found!r}, not {expected!r}. Choose the directory "

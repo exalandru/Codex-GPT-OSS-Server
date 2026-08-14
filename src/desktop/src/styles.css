@@ -118,7 +118,7 @@ pre {
   background: var(--panel); border-color: var(--line); color: var(--text);
 }
 
-.library { list-style: none; margin: 14px 0 0; padding: 0; }
+.library { list-style: none; margin: 0; padding: 0; }
 .library-row { border-top: 1px solid var(--line); padding: 14px 0; }
 .library-row:first-child { border-top: none; }
 .library-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -198,9 +198,21 @@ select.repo-input { appearance: none; cursor: pointer; }
 }
 
 
-/* The supported models. Given cards rather than list rows because they are a
-   choice the user makes, not inventory they scan. */
-.catalog { list-style: none; margin: 0 0 18px; padding: 0; display: grid; gap: 12px;
+/* One tier of models, with its heading. Spacing lives on the section rather
+   than on the lists inside it, so a section reads the same whether it holds
+   cards or rows. */
+.models-section { margin: 0 0 18px; }
+
+/* The models the product offers. Given cards rather than list rows because they
+   are a choice the user makes, not inventory they scan.
+
+   `auto-fit` collapses empty tracks, so a tier holding one model gets a card
+   the full width of the row rather than one card beside empty space. That suits
+   the Optimized section, where the single card is the recommendation. Switching
+   to `auto-fill` would keep every card one track wide in every section; it is a
+   one-word change here, and it is a look to choose by seeing it rather than by
+   reading this rule. */
+.catalog { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
 .catalog-card { border: 1px solid var(--line, #2b2f38); border-radius: 8px; padding: 12px 14px;
   display: flex; flex-direction: column; gap: 8px; }
@@ -211,10 +223,14 @@ select.repo-input { appearance: none; cursor: pointer; }
 button.primary { border-color: #0e7490; color: #7dd3fc; }
 
 
-/* The advanced download sits below the presets, behind a quiet rule: it is an
-   escape hatch, not a peer of the two supported models. */
+/* The advanced download sits below the model sections, behind a quiet rule: it
+   is an escape hatch, not a peer of the models the product offers. */
 .divider { border: 0; border-top: 1px solid var(--line, #2b2f38); margin: 22px 0 16px; }
-.advanced-heading { margin: 0 0 10px; font-size: 0.95rem; font-weight: 600;
+
+/* Every heading that names a section of this page — one per tier, plus "Install
+   more models". One rule, so a tier heading and the acquisition heading cannot
+   drift into looking like different kinds of thing. */
+.section-heading { margin: 0 0 10px; font-size: 0.95rem; font-weight: 600;
   color: var(--muted, #9aa1ad); }
 
 

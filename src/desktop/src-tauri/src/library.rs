@@ -153,15 +153,10 @@ pub async fn list() -> Result<Value, String> {
     run_json(&["models", "list", "--json"]).await
 }
 
-/// The supported GPT-OSS models, already joined with what is installed.
-///
-/// One call rather than list-plus-reconcile here: deciding which installed
-/// directory corresponds to which supported model is the server's judgement,
-/// and repeating it in the interface would eventually disagree.
 /// Import a directory, optionally requiring it to be a specific catalog model.
 ///
-/// `expect` is forwarded, not checked: whether a directory *is* the 120B is the
-/// server's judgement, made on the same rule the catalogue reconciles with.
+/// `expect` is forwarded, not checked: whether a directory *is* a given model is
+/// the server's judgement, made on the same rule the catalogue reconciles with.
 pub async fn import_expecting(path: &str, expect: Option<String>) -> Result<Value, String> {
     let mut argv = vec!["models", "import", "--json"];
     if let Some(slug) = expect.as_deref() {
@@ -203,6 +198,13 @@ pub async fn set_storage(path: &str) -> Result<Value, String> {
     run_json(&["models", "storage", "--json", path]).await
 }
 
+/// The GPT-OSS models this build offers, already joined with what is installed
+/// and grouped into the tiers they are offered in.
+///
+/// One call rather than list-plus-reconcile here: deciding which installed
+/// directory corresponds to which offered model, and which section it belongs
+/// to, is the server's judgement, and repeating it in the interface would
+/// eventually disagree.
 pub async fn catalog() -> Result<Value, String> {
     run_json(&["models", "catalog"]).await
 }

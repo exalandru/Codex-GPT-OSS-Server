@@ -99,7 +99,17 @@ class ModelEntry:
 
 
 def _base_model_id(path: str | Path) -> str:
-    """A readable deterministic id for a newly registered library entry."""
+    """A readable deterministic id for a newly registered library entry.
+
+    Deliberately `slug_for` and not the catalogue's `catalog_slug_for`. This id
+    is *persisted* -- it is written to `models.json` and it keys
+    `model-settings.json` -- so it must depend only on the directory, never on a
+    catalogue that ships new entries with new versions. Resolving it through the
+    catalogue would give one unchanged directory two different ids across two
+    releases, and the user's per-model settings would quietly stop applying.
+    Which catalogue entry a directory belongs to is a separate question, asked
+    separately, by `catalog_slug_for`.
+    """
     from ..models import slug_for
 
     base = slug_for(Path(path).name)

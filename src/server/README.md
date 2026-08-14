@@ -77,9 +77,9 @@ tools** — declared as real Harmony namespaces and returned with `name` and
 Multi-agent works on that path; MCP is carried by it and is PARTIAL for a
 client-side reason (see the root README).
 
-Namespaced work wants **GPT-OSS-120B**. The 20B never addresses a namespace and
-depends on conservative recipient normalisation (D7); see the root README for
-the measurements.
+Namespaced work wants **GPT-OSS-120B**, or the **GPT-OSS Coder** fine-tune built
+on it. The 20B never addresses a namespace and depends on conservative recipient
+normalisation (D7); see the root README for the measurements.
 
 Provider-executed `web_search` is dropped — there is no search executor here.
 Each distinct dropped tool is logged once.

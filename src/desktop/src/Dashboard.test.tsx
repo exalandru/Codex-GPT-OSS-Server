@@ -77,7 +77,7 @@ function daemon({ up = true, status = statusPayload() }: { up?: boolean; status?
     if (command === "model_catalog")
       return {
         models: [
-          { slug: "gpt-oss-120b", display_name: "GPT-OSS 120B", supported: true, installed: true,
+          { slug: "gpt-oss-120b", display_name: "GPT-OSS 120B", tier: "stock", installed: true,
             model: { name: "gpt-oss-120b-mxfp4-bf16", state: "READY" } },
         ],
       };

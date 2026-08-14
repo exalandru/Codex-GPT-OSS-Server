@@ -10,10 +10,15 @@
 // unplugged, and the interface has to say so rather than invite a re-download
 // of sixty gigabytes.
 //
-// The page is in two halves. Above: the models this installation has, and what
-// can be done to each. Below, behind a rule and its own heading: the three ways
-// to acquire another one. They used to be interleaved, which put "Scan roots"
-// beside "Configure…" as though scanning were something done to a model.
+// The page is in two halves. Above: the models this installation has, grouped
+// into a section per tier, and what can be done to each. Below, behind a rule
+// and its own heading: the three ways to acquire another one. They used to be
+// interleaved, which put "Scan roots" beside "Configure…" as though scanning
+// were something done to a model.
+//
+// Which section a model belongs to, and the order the sections come in, are the
+// server's answer too — `tier` on each catalogue entry, in the order the
+// catalogue emits them. This file supplies the wording and nothing else.
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -29,6 +34,33 @@ const STATES: Record<string, { label: string; tone: "ok" | "warn" | "bad" }> = {
   INVALID: { label: "Invalid", tone: "bad" },
   INCOMPATIBLE: { label: "Not GPT-OSS", tone: "bad" },
 };
+
+/** How each tier reads, and which shape its models are drawn in.
+ *
+ * The same division of labour as STATES: the server owns the set, this owns the
+ * words. It deliberately does not own the *order* — that is the order the
+ * catalogue returns, so offering a new tier first needs no edit here.
+ *
+ * `cards` is for a model the product offers, which is a choice being made and
+ * is worth the space whether or not it is installed. `rows` is for inventory
+ * the user brought themselves, which is scanned rather than chosen.
+ */
+const SECTIONS: Record<string, { label: string; layout: "cards" | "rows" }> = {
+  optimized: { label: "Optimized Models", layout: "cards" },
+  stock: { label: "Stock Models", layout: "cards" },
+  other: { label: "Other Models", layout: "rows" },
+};
+
+/** A tier the server knows about and this build does not.
+ *
+ * Drawn as a card rather than a row, and that is not arbitrary: `other` is the
+ * only tier the server synthesises, so any tier not listed above necessarily
+ * came from a catalogue entry and therefore has a repository behind it and
+ * Download/Locate… to offer.
+ */
+function sectionFor(tier: string) {
+  return SECTIONS[tier] ?? { label: tier, layout: "cards" as const };
+}
 
 type Busy = "import" | "scan" | "forget" | "download" | null;
 
@@ -53,15 +85,15 @@ export function Models({ serverRunning = false }: { serverRunning?: boolean }) {
   /** The library. Never needs a running server. */
   const refresh = useCallback(async () => {
     try {
-      // The catalogue already joins the supported models with what is
+      // The catalogue already joins the models this build offers with what is
       // installed. Doing that here would mean this file deciding which
       // directory is "the 20B", which is the server's judgement.
-      const [installed, supported] = await Promise.all([
+      const [installed, offered] = await Promise.all([
         api.listModels(),
         api.modelCatalog(),
       ]);
       setLibrary(installed);
-      setCatalog((api.pick(supported, "models") as Record<string, unknown>[]) ?? []);
+      setCatalog((api.pick(offered, "models") as Record<string, unknown>[]) ?? []);
       setFailure(null);
     } catch (cause) {
       setFailure(String(cause));
@@ -112,11 +144,27 @@ export function Models({ serverRunning = false }: { serverRunning?: boolean }) {
   }, [refresh, refreshDownload]);
 
   // Deliberately *not* the raw library listing. The server has already decided
-  // which installed directory is which catalog model; taking its answer is what
-  // keeps a matched model from appearing both as a card and as a row. Matching
-  // by display name or path here would be a second, disagreeing opinion.
-  const presets = catalog.filter((entry) => entry.supported);
-  const models = catalog.filter((entry) => !entry.supported && entry.model);
+  // which installed directory is which catalog model, and which section each
+  // belongs to; taking its answer is what keeps a matched model from appearing
+  // both as a card and as a row. Matching by display name, slug or path here
+  // would be a second, disagreeing opinion.
+  //
+  // Grouped by walking the catalogue in the order it arrived, into a Map, which
+  // preserves insertion order. So section order is the server's list order and
+  // is never restated here.
+  const sections = new Map<string, Record<string, unknown>[]>();
+  for (const entry of catalog) {
+    const tier = String(entry.tier ?? "other");
+    // A row needs something on disk to describe; a card does not.
+    if (sectionFor(tier).layout === "rows" && !entry.model) continue;
+    const group = sections.get(tier);
+    if (group) group.push(entry);
+    else sections.set(tier, [entry]);
+  }
+  const presets = catalog.filter((entry) => String(entry.tier ?? "other") !== "other");
+  const strangers = catalog.filter(
+    (entry) => String(entry.tier ?? "other") === "other" && entry.model,
+  );
   const roots = (api.pick(library, "roots") as string[] | undefined) ?? [];
 
   /** Run an action with a visible busy state and a visible outcome. */
@@ -148,179 +196,115 @@ export function Models({ serverRunning = false }: { serverRunning?: boolean }) {
       )}
 
 
-      {/* The two models this build is specialised for, shown whether or not
-          they are installed: "not installed yet" is a state with an action
-          attached, not an absence. */}
-      <ul className="catalog" aria-label="Supported models">
-        {presets.map((entry) => (
-            <li key={String(entry.slug)} className="catalog-card">
-              <div className="catalog-head">
-                <strong>{String(entry.display_name)}</strong>
-                <span className={`pill ${entry.installed ? "pill-live" : "pill-down"}`}>
-                  {entry.installed
-                    ? String(api.pick(entry, "model", "state") ?? "installed")
-                    : "not installed"}
-                </span>
-              </div>
-              {/* What was actually installed, read-only. The title is the model;
-                  this is the copy on disk. Deliberately not `Served as`, which
-                  is a setting and lives in Configure. */}
-              {entry.installed ? (
-                <div className="catalog-installed">
-                  <code>{String(api.pick(entry, "model", "name") ?? "")}</code>
-                  <span className="catalog-facts">
-                    {[
-                      api.pick(entry, "model", "quantization"),
-                      api.count(entry, "model", "context_length")
-                        ? `${api.tokens(api.count(entry, "model", "context_length"))} ctx`
-                        : null,
-                      api.count(entry, "model", "disk_bytes")
-                        ? api.bytes(api.count(entry, "model", "disk_bytes"))
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </span>
-                </div>
-              ) : (
-                <p className="catalog-note">{String(entry.note ?? "")}</p>
-              )}
-              {entry.installed === true && <AdapterNote entry={entry} />}
-              {entry.served_conflict === true && (
-                <p className="notice notice-error" role="alert">
-                  Another installed model is also served as{" "}
-                  <code>{String(entry.served_name ?? entry.slug)}</code>. Neither is offered
-                  to Codex until one of them is configured with a different name.
-                </p>
-              )}
-              <div className="actions">
-                {entry.installed ? (
-                  <>
-                    <button
-                      disabled={busy !== null}
-                      onClick={() =>
-                        setConfiguring({
-                          slug: String(entry.id ?? entry.slug),
-                          name: String(entry.display_name),
-                        })
-                      }
-                    >
-                      Configure…
-                    </button>
-                    <button
-                      disabled={busy !== null}
-                      onClick={() =>
-                        void api.revealInFinder(
-                          String(api.pick(entry, "model", "path") ?? ""),
-                        )
-                      }
-                    >
-                      Reveal in Finder
-                    </button>
-                    <button
-                      disabled={busy !== null}
-                      onClick={() =>
-                        void act("forget", async () => {
-                          await api.forgetModel(String(api.pick(entry, "model", "path") ?? ""));
-                          return `Removed ${entry.display_name} from the library.`;
-                        })
-                      }
-                    >
-                      Remove from library
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    {/* Disabled while any transfer is in flight. One download at
-                        a time is a server rule, and it enforces it — but a card
-                        that stays enabled and answers a click with "already
-                        downloading" makes the user discover the rule by being
-                        refused. `busy` does not cover this: it is cleared as
-                        soon as `start_download` returns, which is immediately,
-                        while the transfer runs for hours. */}
-                    <button
-                      className="primary"
-                      disabled={busy !== null || api.isDownloading(download)}
-                      onClick={() =>
-                        void act("download", async () => {
-                          // The repository id comes from the server's catalogue,
-                          // never from a copy kept here.
-                          await api.startDownload(String(entry.repo));
-                          await refreshDownload();
-                          return `Downloading ${entry.display_name}…`;
-                        })
-                      }
-                    >
-                      {/* The card title already says which model this is. */}
-                      Download
-                    </button>
-                    <button
-                      disabled={busy !== null}
-                      onClick={() =>
-                        void act("import", async () => {
-                          const chosen = await api.chooseModelDirectory();
-                          if (!chosen) return "Locate cancelled.";
-                          // Scoped to this card: the server refuses a directory
-                          // that is a different model rather than attaching it
-                          // to the wrong entry.
-                          await api.importModelFor(chosen, String(entry.slug));
-                          return `${entry.display_name} located.`;
-                        })
-                      }
-                    >
-                      Locate…
-                    </button>
-                  </>
-                )}
-              </div>
-            </li>
-        ))}
-      </ul>
+      {/* One section per tier, in the order the catalogue returned them. A
+          catalogue model appears whether or not it is installed: "not installed
+          yet" is a state with an action attached, not an absence.
 
-      {/* This list is the models that are *not* one of the two presets, so its
-          emptiness says nothing about whether anything is installed. It used to
-          announce "No models yet" directly beneath two READY catalogue cards,
-          which is simply false to anyone reading the screen. The real
-          no-model state is already carried by the cards themselves — NOT
-          INSTALLED, with Download and Locate… on them — so when a preset is
-          installed there is nothing left for this to explain and it says
-          nothing at all. */}
-      {models.length === 0 ? (
-        presets.some((entry) => entry.installed) ? null : (
-          <p className="empty">
-            No models yet. Import a GPT-OSS directory, or add a root to scan:{" "}
-            {roots.map((root) => (
-              <code key={root}>{root}</code>
-            ))}
-          </p>
-        )
-      ) : (
-        <ul className="library" aria-label="Other installed models">
-          {models.map((entry) => {
-            const model = entry.model as Record<string, unknown>;
-            return (
-            <ModelRow
-              key={String(entry.id ?? model.path)}
-              entry={entry}
-              model={model}
-              busy={busy !== null}
-              onConfigure={() =>
-                setConfiguring({
-                  slug: String(entry.id ?? entry.slug),
-                  name: String(entry.display_name ?? model.name),
-                })
-              }
-              onForget={() =>
-                void act("forget", async () => {
-                  await api.forgetModel(String(model.path));
-                  return `Removed ${String(model.name)} from the library. Its files were left in place.`;
-                })
-              }
-              onReveal={() => void api.revealInFinder(String(model.path))}
-            />
-            );
-          })}
-        </ul>
+          A tier with nothing in it is not rendered at all, heading included.
+          That matters for Other Models: its emptiness says nothing about
+          whether anything is installed, so a heading standing over nothing
+          would be making a claim the page cannot support. */}
+      {[...sections].map(([tier, entries]) => {
+        const { label, layout } = sectionFor(tier);
+        const headingId = `models-tier-${tier}`;
+        return (
+          <section className="models-section" key={tier}>
+            {/* `aria-labelledby` rather than `aria-label`: one string is both
+                the visible heading and the list's accessible name, so the two
+                cannot come to disagree. The <section> is left deliberately
+                unnamed — naming it would make it a landmark competing with
+                "Install more models" below. */}
+            <h3 className="section-heading" id={headingId}>
+              {label}
+            </h3>
+            <ul
+              className={layout === "cards" ? "catalog" : "library"}
+              aria-labelledby={headingId}
+            >
+              {entries.map((entry) => {
+                const model = entry.model as Record<string, unknown> | null;
+                return layout === "cards" ? (
+                  <PresetCard
+                    key={String(entry.slug)}
+                    entry={entry}
+                    busy={busy !== null}
+                    downloading={api.isDownloading(download)}
+                    onConfigure={() =>
+                      setConfiguring({
+                        slug: String(entry.id ?? entry.slug),
+                        name: String(entry.display_name),
+                      })
+                    }
+                    onReveal={() =>
+                      void api.revealInFinder(String(api.pick(entry, "model", "path") ?? ""))
+                    }
+                    onForget={() =>
+                      void act("forget", async () => {
+                        await api.forgetModel(String(api.pick(entry, "model", "path") ?? ""));
+                        return `Removed ${entry.display_name} from the library.`;
+                      })
+                    }
+                    onDownload={() =>
+                      void act("download", async () => {
+                        // The repository id comes from the server's catalogue,
+                        // never from a copy kept here.
+                        await api.startDownload(String(entry.repo));
+                        await refreshDownload();
+                        return `Downloading ${entry.display_name}…`;
+                      })
+                    }
+                    onLocate={() =>
+                      void act("import", async () => {
+                        const chosen = await api.chooseModelDirectory();
+                        if (!chosen) return "Locate cancelled.";
+                        // Scoped to this card: the server refuses a directory
+                        // that is a different model rather than attaching it
+                        // to the wrong entry.
+                        await api.importModelFor(chosen, String(entry.slug));
+                        return `${entry.display_name} located.`;
+                      })
+                    }
+                  />
+                ) : (
+                  <ModelRow
+                    key={String(entry.id ?? model?.path)}
+                    entry={entry}
+                    model={model as Record<string, unknown>}
+                    busy={busy !== null}
+                    onConfigure={() =>
+                      setConfiguring({
+                        slug: String(entry.id ?? entry.slug),
+                        name: String(entry.display_name ?? model?.name),
+                      })
+                    }
+                    onForget={() =>
+                      void act("forget", async () => {
+                        await api.forgetModel(String(model?.path));
+                        return `Removed ${String(model?.name)} from the library. Its files were left in place.`;
+                      })
+                    }
+                    onReveal={() => void api.revealInFinder(String(model?.path))}
+                  />
+                );
+              })}
+            </ul>
+          </section>
+        );
+      })}
+
+      {/* A statement about the page rather than about any one section, so it
+          sits below all of them. It used to announce "No models yet" directly
+          beneath two READY catalogue cards, which is simply false to anyone
+          reading the screen. The real no-model state is already carried by the
+          cards themselves — NOT INSTALLED, with Download and Locate… on them —
+          so this speaks only when there is genuinely nothing. */}
+      {strangers.length === 0 && !presets.some((entry) => entry.installed) && (
+        <p className="empty">
+          No models yet. Import a GPT-OSS directory, or add a root to scan:{" "}
+          {roots.map((root) => (
+            <code key={root}>{root}</code>
+          ))}
+        </p>
       )}
 
       {/* Over the library rather than below it: what is being configured is one
@@ -352,7 +336,7 @@ export function Models({ serverRunning = false }: { serverRunning?: boolean }) {
           in Configuration. */}
       <hr className="divider" />
       <section className="install" aria-label="Install more models">
-        <h3 className="advanced-heading">Install more models</h3>
+        <h3 className="section-heading">Install more models</h3>
         <div className="install-tiles">
           <HuggingFaceTile
             notice={downloadNotice}
@@ -458,6 +442,106 @@ function AdapterNote({ entry }: { entry: Record<string, unknown> }) {
     <p className="library-detail">
       <span className="pill pill-warn">LoRA</span> <code className="library-path">{path}</code>
     </p>
+  );
+}
+
+/** A model the product offers, installed or not.
+ *
+ * The peer of `ModelRow`, and the shape used for every catalogue tier. It holds
+ * no state and starts no work: every action is a callback, so the busy flag,
+ * the result banner and the failure banner stay in one place rather than being
+ * reproduced once per section.
+ */
+function PresetCard({
+  entry,
+  busy,
+  downloading,
+  onConfigure,
+  onReveal,
+  onForget,
+  onDownload,
+  onLocate,
+}: {
+  entry: Record<string, unknown>;
+  busy: boolean;
+  downloading: boolean;
+  onConfigure: () => void;
+  onReveal: () => void;
+  onForget: () => void;
+  onDownload: () => void;
+  onLocate: () => void;
+}) {
+  return (
+    <li className="catalog-card">
+      <div className="catalog-head">
+        <strong>{String(entry.display_name)}</strong>
+        <span className={`pill ${entry.installed ? "pill-live" : "pill-down"}`}>
+          {entry.installed ? String(api.pick(entry, "model", "state") ?? "installed") : "not installed"}
+        </span>
+      </div>
+      {/* What was actually installed, read-only. The title is the model; this
+          is the copy on disk. Deliberately not `Served as`, which is a setting
+          and lives in Configure. */}
+      {entry.installed ? (
+        <div className="catalog-installed">
+          <code>{String(api.pick(entry, "model", "name") ?? "")}</code>
+          <span className="catalog-facts">
+            {[
+              api.pick(entry, "model", "quantization"),
+              api.count(entry, "model", "context_length")
+                ? `${api.tokens(api.count(entry, "model", "context_length"))} ctx`
+                : null,
+              api.count(entry, "model", "disk_bytes")
+                ? api.bytes(api.count(entry, "model", "disk_bytes"))
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+        </div>
+      ) : (
+        <p className="catalog-note">{String(entry.note ?? "")}</p>
+      )}
+      {entry.installed === true && <AdapterNote entry={entry} />}
+      {entry.served_conflict === true && (
+        <p className="notice notice-error" role="alert">
+          Another installed model is also served as{" "}
+          <code>{String(entry.served_name ?? entry.slug)}</code>. Neither is offered to Codex
+          until one of them is configured with a different name.
+        </p>
+      )}
+      <div className="actions">
+        {entry.installed ? (
+          <>
+            <button disabled={busy} onClick={onConfigure}>
+              Configure…
+            </button>
+            <button disabled={busy} onClick={onReveal}>
+              Reveal in Finder
+            </button>
+            <button disabled={busy} onClick={onForget}>
+              Remove from library
+            </button>
+          </>
+        ) : (
+          <>
+            {/* Disabled while any transfer is in flight. One download at a time
+                is a server rule, and it enforces it — but a card that stays
+                enabled and answers a click with "already downloading" makes the
+                user discover the rule by being refused. `busy` does not cover
+                this: it is cleared as soon as `start_download` returns, which is
+                immediately, while the transfer runs for hours. */}
+            <button className="primary" disabled={busy || downloading} onClick={onDownload}>
+              {/* The card title already says which model this is. */}
+              Download
+            </button>
+            <button disabled={busy} onClick={onLocate}>
+              Locate…
+            </button>
+          </>
+        )}
+      </div>
+    </li>
   );
 }
 

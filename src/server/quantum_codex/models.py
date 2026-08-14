@@ -22,7 +22,7 @@ from typing import Any
 
 from .canonical import ReasoningEffort
 from .config import ConfigError
-from .library.catalog import defaults_for, display_name_for
+from .library.catalog import catalog_slug_for, defaults_for, display_name_for
 
 logger = logging.getLogger(__name__)
 
@@ -257,9 +257,16 @@ def resolved_model_names(
     slug belongs to a *different* physical model. The registry migration keeps
     the first entry's id equal to that slug, so genuine version-1 settings are
     matched by the id lookup alone.
+
+    The two slugs here answer different questions and are derived differently on
+    purpose. ``catalog_slug`` asks *which catalogue model is this a copy of*, and
+    the catalogue answers it. The identity fallback asks *what would this
+    directory's id have been*, which is `slug_for` and nothing else: that value
+    was persisted by version 1, so re-deriving it through the catalogue would
+    silently rename an existing entry the first time the catalogue changed.
     """
-    catalog_slug = slug_for(report.entry.name)
-    library_id = getattr(report.entry, "id", None) or catalog_slug
+    catalog_slug = catalog_slug_for(report.entry.name)
+    library_id = getattr(report.entry, "id", None) or slug_for(report.entry.name)
     stored = (overrides or {}).get(library_id, {})
     chosen = {**defaults_for(catalog_slug), **stored}
 

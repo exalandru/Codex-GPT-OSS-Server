@@ -7,7 +7,10 @@ DIST_DIR := $(ROOT)/dist
 export UV_PROJECT_ENVIRONMENT := $(ROOT)/.venv
 
 # Development models. The 20B keeps the edit-run loop fast; the 120B is the
-# parity check, and the model to use for namespaced tools (see README).
+# parity check, and the model to use for namespaced tools (see README). The
+# Coder is the tuned build this project ships, and is what to run when the
+# change being checked is about agentic behaviour rather than about the server:
+# tool-call shape, iteration, how a turn ends.
 #
 # Override for your own layout:
 #   make dev-server MODELS_DIR="$$HOME/models"
@@ -15,17 +18,19 @@ export UV_PROJECT_ENVIRONMENT := $(ROOT)/.venv
 MODELS_DIR ?= $(HOME)/models
 MODEL_20B ?= $(MODELS_DIR)/gpt-oss-20b-mxfp4-bf16
 MODEL_120B ?= $(MODELS_DIR)/gpt-oss-120b-mxfp4-bf16
+MODEL_CODER ?= $(MODELS_DIR)/GPT-OSS-Coder-MLX
 
 PORT ?= 8123
 
 .PHONY: help install install-server install-desktop dev-server dev-server-120b \
-	dev-desktop stage-desktop build-desktop doctor test lint ci clean
+	dev-server-coder dev-desktop stage-desktop build-desktop doctor test lint ci clean
 
 help:
 	@printf '%s\n' \
 		'make install         Install server and desktop dependencies' \
 		'make dev-server      Run the server on GPT-OSS-20B' \
 		'make dev-server-120b Run the server on GPT-OSS-120B' \
+		'make dev-server-coder Run the server on the GPT-OSS Coder fine-tune' \
 		'make dev-desktop     Run the desktop control plane' \
 		'make stage-desktop   Stage the bundle resources cargo needs' \
 		'make build-desktop   Build the macOS app and dmg' \
@@ -49,6 +54,10 @@ dev-server:
 dev-server-120b:
 	uv run --project "$(SERVER_DIR)" quantum-codex-server serve \
 		--model "$(MODEL_120B)" --served-model-name gpt-oss-120b --port $(PORT)
+
+dev-server-coder:
+	uv run --project "$(SERVER_DIR)" quantum-codex-server serve \
+		--model "$(MODEL_CODER)" --served-model-name gpt-oss-coder --port $(PORT)
 
 # The desktop app drives the same CLI a terminal would, so it needs to know
 # how to invoke it from a development checkout rather than from PATH.

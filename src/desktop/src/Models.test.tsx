@@ -31,16 +31,31 @@ function installed(name: string, state = "READY") {
   };
 }
 
-function preset(slug: string, display: string, model: unknown = null) {
+function preset(
+  slug: string,
+  display: string,
+  model: unknown = null,
+  tier: string = "stock",
+) {
   return {
     slug,
     display_name: display,
     repo: `mlx-community/${slug}-MXFP4-Q8`,
     parameters: slug.includes("120") ? "120B" : "20B",
     note: "",
-    supported: true,
+    tier,
     installed: model !== null,
     model,
+  };
+}
+
+/** The tuned build, which the server offers in its own section before the
+ *  stock ones. Its directory name is what a download of the repository writes. */
+function coder(model: unknown = null) {
+  return {
+    ...preset("gpt-oss-coder", "GPT-OSS Coder", model, "optimized"),
+    repo: "exalandru/GPT-OSS-Coder-MLX",
+    parameters: "120B",
   };
 }
 
@@ -64,11 +79,16 @@ function occurrences(text: string): number {
 }
 
 describe("catalog and library reconciliation", () => {
-  it("shows both supported models even with nothing installed", async () => {
-    respond([preset("gpt-oss-20b", "GPT-OSS 20B"), preset("gpt-oss-120b", "GPT-OSS 120B")]);
+  it("shows every catalogue model even with nothing installed", async () => {
+    respond([
+      coder(),
+      preset("gpt-oss-20b", "GPT-OSS 20B"),
+      preset("gpt-oss-120b", "GPT-OSS 120B"),
+    ]);
     render(<Models />);
 
-    expect(await screen.findByText("GPT-OSS 20B")).toBeTruthy();
+    expect(await screen.findByText("GPT-OSS Coder")).toBeTruthy();
+    expect(screen.getByText("GPT-OSS 20B")).toBeTruthy();
     expect(screen.getByText("GPT-OSS 120B")).toBeTruthy();
   });
 
@@ -86,7 +106,7 @@ describe("catalog and library reconciliation", () => {
     // never a second time as a generic library row.
     expect(occurrences("gpt-oss-20b-mxfp4-bf16") - 1).toBe(1);
     expect(screen.getAllByText("GPT-OSS 20B")).toHaveLength(1);
-    expect(screen.queryByRole("list", { name: /other installed models/i })).toBeNull();
+    expect(screen.queryByRole("list", { name: /other models/i })).toBeNull();
   });
 
   it("renders an installed 120B once, as its catalog card", async () => {
@@ -100,7 +120,7 @@ describe("catalog and library reconciliation", () => {
     await screen.findByText("GPT-OSS 120B");
     expect(occurrences("gpt-oss-120b-mxfp4-bf16") - 1).toBe(1);
     expect(screen.getAllByText("GPT-OSS 120B")).toHaveLength(1);
-    expect(screen.queryByRole("list", { name: /other installed models/i })).toBeNull();
+    expect(screen.queryByRole("list", { name: /other models/i })).toBeNull();
   });
 
   it("still lists a model that is not one of the presets", async () => {
@@ -112,7 +132,7 @@ describe("catalog and library reconciliation", () => {
         {
           slug: "some-other-model",
           display_name: "some-other-model",
-          supported: false,
+          tier: "other",
           installed: true,
           model: other,
         },
@@ -121,7 +141,7 @@ describe("catalog and library reconciliation", () => {
     );
     render(<Models />);
 
-    const list = await screen.findByRole("list", { name: /other installed models/i });
+    const list = await screen.findByRole("list", { name: /other models/i });
     expect(within(list).getByText("some-other-model", { selector: "strong" })).toBeTruthy();
   });
 
@@ -134,7 +154,7 @@ describe("catalog and library reconciliation", () => {
           slug: "some-other-model",
           display_name: "My Local Model",
           served_name: "codex-local",
-          supported: false,
+          tier: "other",
           installed: true,
           model: other,
         },
@@ -143,7 +163,7 @@ describe("catalog and library reconciliation", () => {
     );
     render(<Models />);
 
-    const list = await screen.findByRole("list", { name: /other installed models/i });
+    const list = await screen.findByRole("list", { name: /other models/i });
     expect(within(list).getByText("My Local Model")).toBeTruthy();
     expect(within(list).getByText("codex-local")).toBeTruthy();
     await userEvent.click(within(list).getByRole("button", { name: "Configure…" }));
@@ -182,7 +202,7 @@ describe("catalog and library reconciliation", () => {
           display_name: "Some other model",
           served_name: "gpt-oss-20b",
           served_conflict: true,
-          supported: false,
+          tier: "other",
           installed: true,
           model: other,
         },
@@ -206,7 +226,7 @@ describe("a preset that is not installed", () => {
     render(<Models />);
 
     await screen.findByText("GPT-OSS 20B");
-    const cards = within(screen.getByRole("list", { name: /supported models/i }));
+    const cards = within(screen.getByRole("list", { name: /stock models/i }));
     expect(cards.getAllByRole("button", { name: "Download" })).toHaveLength(2);
     expect(cards.getAllByRole("button", { name: "Locate…" })).toHaveLength(2);
     // The card title already says which model this is.
@@ -217,7 +237,7 @@ describe("a preset that is not installed", () => {
     render(<Models />);
 
     await screen.findByText("GPT-OSS 20B");
-    const cards = within(screen.getByRole("list", { name: /supported models/i }));
+    const cards = within(screen.getByRole("list", { name: /stock models/i }));
     await userEvent.click(cards.getAllByRole("button", { name: "Download" })[0]);
 
     await waitFor(() =>
@@ -693,7 +713,7 @@ describe("the configuration dialog", () => {
       slug: "my-own-gpt-oss",
       display_name: store["library-7f3a"]?.display_name ?? "my-own-gpt-oss",
       served_name: store["library-7f3a"]?.served_model_name ?? "my-own-gpt-oss",
-      supported: false,
+      tier: "other",
       installed: true,
       model,
     });
@@ -731,7 +751,7 @@ describe("the configuration dialog", () => {
   }
 
   async function openConfigure() {
-    const list = await screen.findByRole("list", { name: /other installed models/i });
+    const list = await screen.findByRole("list", { name: /other models/i });
     await userEvent.click(within(list).getByRole("button", { name: "Configure…" }));
     return screen.findByRole("dialog");
   }
@@ -741,7 +761,7 @@ describe("the configuration dialog", () => {
     render(<Models />);
 
     // Nothing before the click: the editor is not part of the page's flow.
-    await screen.findByRole("list", { name: /other installed models/i });
+    await screen.findByRole("list", { name: /other models/i });
     expect(screen.queryByRole("dialog")).toBeNull();
 
     const dialog = await openConfigure();
@@ -749,7 +769,7 @@ describe("the configuration dialog", () => {
     expect(dialog.getAttribute("aria-modal")).toBe("true");
     expect(dialog.getAttribute("aria-label")).toMatch(/settings/i);
     // The library it belongs to is still on screen behind it.
-    expect(screen.getByRole("list", { name: /other installed models/i })).toBeTruthy();
+    expect(screen.getByRole("list", { name: /other models/i })).toBeTruthy();
   });
 
   it("edits an imported model by its stable library id", async () => {
@@ -768,7 +788,7 @@ describe("the configuration dialog", () => {
     // remount -- to show the truth.
     server();
     render(<Models />);
-    const list = await screen.findByRole("list", { name: /other installed models/i });
+    const list = await screen.findByRole("list", { name: /other models/i });
     expect(within(list).getByText("my-own-gpt-oss", { selector: "strong" })).toBeTruthy();
 
     await openConfigure();
@@ -783,7 +803,7 @@ describe("the configuration dialog", () => {
   it("shows the new served name where the served name is shown", async () => {
     server();
     render(<Models />);
-    const list = await screen.findByRole("list", { name: /other installed models/i });
+    const list = await screen.findByRole("list", { name: /other models/i });
 
     await openConfigure();
     await userEvent.type(screen.getByLabelText(/served as/i), "codex-local");
@@ -830,7 +850,7 @@ describe("the configuration dialog", () => {
     respond([{ ...preset("gpt-oss-20b", "GPT-OSS 20B", local), id: "gpt-oss-20b" }], [local]);
     render(<Models />);
 
-    const cards = await screen.findByRole("list", { name: /supported models/i });
+    const cards = await screen.findByRole("list", { name: /stock models/i });
     await userEvent.click(within(cards).getByRole("button", { name: "Configure…" }));
 
     expect(await screen.findByRole("dialog")).toBeTruthy();
@@ -874,7 +894,7 @@ describe("where downloads go", () => {
           id: "library-7f3a",
           slug: "some-other-model",
           display_name: "My Local Model",
-          supported: false,
+          tier: "other",
           installed: true,
           model: other,
         },
@@ -883,7 +903,7 @@ describe("where downloads go", () => {
     );
     render(<Models />);
 
-    const list = await screen.findByRole("list", { name: /other installed models/i });
+    const list = await screen.findByRole("list", { name: /other models/i });
     await userEvent.click(within(list).getByRole("button", { name: "Configure…" }));
     const dialog = await screen.findByRole("dialog");
 
@@ -954,7 +974,7 @@ describe("install more models", () => {
     render(<Models />);
 
     await screen.findByText("GPT-OSS 20B");
-    const catalog = within(screen.getByRole("list", { name: /supported models/i }));
+    const catalog = within(screen.getByRole("list", { name: /stock models/i }));
     expect(catalog.queryByPlaceholderText(/HugginFace ID/i)).toBeNull();
     expect(catalog.queryByRole("button", { name: /choose folder/i })).toBeNull();
     expect(catalog.queryByRole("button", { name: "Scan" })).toBeNull();
@@ -1054,5 +1074,121 @@ describe("a configured LoRA adapter", () => {
 
     await screen.findByText("GPT-OSS 20B");
     expect(screen.queryByText("LoRA")).toBeNull();
+  });
+});
+
+describe("the sections the models are offered in", () => {
+  /** Every section heading on the page, in the order it is rendered. */
+  function headings(): string[] {
+    return screen
+      .getAllByRole("heading", { level: 3 })
+      .map((node) => node.textContent ?? "");
+  }
+
+  it("offers the tuned build first, then the stock ones, then everything else", async () => {
+    const mine = installed("some-other-model");
+    respond([
+      coder(),
+      preset("gpt-oss-20b", "GPT-OSS 20B"),
+      preset("gpt-oss-120b", "GPT-OSS 120B"),
+      {
+        slug: "some-other-model",
+        display_name: "some-other-model",
+        tier: "other",
+        installed: true,
+        model: mine,
+      },
+    ]);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS Coder");
+    // The acquisition section stays last: everything above is a model you have,
+    // everything below is a way to get another one.
+    expect(headings()).toEqual([
+      "Optimized Models",
+      "Stock Models",
+      "Other Models",
+      "Install more models",
+    ]);
+  });
+
+  it("puts a model where the server says, not where its name suggests", async () => {
+    // The discriminating case for the whole arrangement. This entry is the
+    // coder by every name it carries and `stock` by the only field that
+    // decides. An interface that re-derived the grouping from the slug, the
+    // display name or the repository would pass every other test here.
+    respond([
+      preset("gpt-oss-20b", "GPT-OSS 20B"),
+      { ...coder(), tier: "stock" },
+    ]);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS Coder");
+    const stock = within(screen.getByRole("list", { name: /stock models/i }));
+    expect(stock.getByText("GPT-OSS Coder")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: /optimized models/i })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /optimized models/i })).toBeNull();
+  });
+
+  it("says nothing about Other Models when there are none", async () => {
+    // Its emptiness says nothing about whether anything is installed, so a
+    // heading standing over nothing would be a claim the page cannot support.
+    respond([coder(installed("GPT-OSS-Coder-MLX")), preset("gpt-oss-20b", "GPT-OSS 20B")]);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS Coder");
+    expect(screen.queryByRole("list", { name: /other models/i })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /other models/i })).toBeNull();
+  });
+
+  it("still renders a tier this build has no wording for", async () => {
+    // A newer server offering a section this one has never heard of. Drawn as
+    // cards, because `other` is the only tier the server synthesises: anything
+    // else came from the catalogue and has a repository to download.
+    respond([{ ...coder(), tier: "experimental" }]);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS Coder");
+    const list = within(await screen.findByRole("list", { name: /experimental/i }));
+    expect(list.getByRole("button", { name: "Download" })).toBeTruthy();
+  });
+
+  it("locates a directory scoped to the tuned build's own card", async () => {
+    mocked.mockImplementation(async (command: string) => {
+      if (command === "model_catalog")
+        return { models: [coder(), preset("gpt-oss-20b", "GPT-OSS 20B")] };
+      if (command === "list_models") return { models: [], roots: [] };
+      if (command === "download_status") return { state: "idle" };
+      if (command === "choose_model_directory") return "/Volumes/Assets/GPT-OSS-Coder-MLX";
+      return { message: "ok" };
+    });
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS Coder");
+    const optimized = within(screen.getByRole("list", { name: /optimized models/i }));
+    await userEvent.click(optimized.getByRole("button", { name: "Locate…" }));
+
+    await waitFor(() =>
+      expect(mocked).toHaveBeenCalledWith("import_model_for", {
+        path: "/Volumes/Assets/GPT-OSS-Coder-MLX",
+        expect: "gpt-oss-coder",
+      }),
+    );
+  });
+
+  it("downloads the tuned build from the repository the server named", async () => {
+    respond([coder(), preset("gpt-oss-20b", "GPT-OSS 20B")]);
+    render(<Models />);
+
+    await screen.findByText("GPT-OSS Coder");
+    const optimized = within(screen.getByRole("list", { name: /optimized models/i }));
+    await userEvent.click(optimized.getByRole("button", { name: "Download" }));
+
+    await waitFor(() =>
+      expect(mocked).toHaveBeenCalledWith("start_download", {
+        repo: "exalandru/GPT-OSS-Coder-MLX",
+        destination: undefined,
+      }),
+    );
   });
 });

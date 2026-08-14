@@ -17,7 +17,9 @@ This is normalisation, not routing authority. The router never chooses between
 candidates and never invents a route -- it only removes a mis-spelling when the
 declarations leave a single possible reading.
 
-This matters because the two supported models behave differently. Harmony's
+This matters because the stock models behave differently from each other -- the
+measurements below are of the 20B and the 120B, and the tuned build is a 120B
+fine-tune that has not been measured separately here. Harmony's
 system block carries one hardcoded routing sentence, ``Calls to these tools must
 go to the commentary channel: 'functions'.``, and there is no way to make it name
 another namespace. Measured on the real models with a namespace declared and a

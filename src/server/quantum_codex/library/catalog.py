@@ -1,9 +1,9 @@
 """The GPT-OSS models this server is built for.
 
-Quantum Codex is specialised on GPT-OSS, so the two supported models are part
-of the product rather than something a user has to know the Hugging Face id
-for. They are listed here whether or not they are installed: "not installed
-yet" is a state with an action attached, not an absence.
+Quantum Codex is specialised on GPT-OSS, so the supported models are part of
+the product rather than something a user has to know the Hugging Face id for.
+They are listed here whether or not they are installed: "not installed yet" is
+a state with an action attached, not an absence.
 
 One definition, on the server. The desktop renders it and never carries its own
 copy of a repository id -- a second list would drift the first time a
@@ -11,29 +11,62 @@ quantisation changed, and the user would download the wrong weights.
 
 This is a *catalogue*, not a registry: it says what the product supports. What
 is actually on disk is the model library's business, and the two are joined by
-slug in :func:`merge`.
+:func:`catalog_slug_for` in :func:`merge`.
+
+The catalogue also says how prominently each model is offered, as
+:class:`ModelTier`. That is a product statement -- this build recommends its own
+tuned weights over the stock ones -- so it is decided here and rendered
+verbatim, rather than inferred from a name by whoever is drawing the page.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field as dc_field
+from enum import StrEnum
 from typing import Any
+
+
+class ModelTier(StrEnum):
+    """How prominently a model is offered, and therefore where it is shown.
+
+    Declared in display order: :func:`merge` groups the catalogue by this, so
+    the order of these members is the order of the sections on the page. Adding
+    a tier here places it without anything else needing to agree -- as long as
+    it is declared *before* `OTHER`, which is not itself sorted: `merge` appends
+    the models it does not recognise after everything in the catalogue, so a
+    tier declared below `OTHER` would still be rendered above it.
+    """
+
+    #: Tuned by this project for the work it is built for.
+    OPTIMIZED = "optimized"
+    #: The upstream GPT-OSS releases.
+    STOCK = "stock"
+    #: Not in the catalogue at all: whatever the user imported or a root scan
+    #: found. Never declared by a `CatalogEntry` -- `merge` synthesises it.
+    OTHER = "other"
 
 
 @dataclass(frozen=True)
 class CatalogEntry:
     """A model this build is specialised for."""
 
-    #: Stable identity. The same slug the library derives from a directory
-    #: name, which is what lets an installed copy be recognised as this entry.
+    #: Stable identity. What :func:`catalog_slug_for` resolves a directory of
+    #: these weights to, which is what lets an installed copy be recognised as
+    #: this entry.
     slug: str
     display_name: str
     #: Where the weights come from. The one place this id exists.
     repo: str
     parameters: str
-    #: Roughly what the download costs, for the space warning before it starts.
+    #: Roughly what the download costs. Informational: the preflight in
+    #: `downloads.py` sizes the transfer from the repository's own published
+    #: file sizes, because that is the number that is actually true.
     download_bytes: int
+    #: Which section this belongs to. Required, and deliberately without a
+    #: default: a new entry states where it is offered rather than drifting
+    #: into whichever tier happened to be listed first.
+    tier: ModelTier
     note: str
     #: This model's intended defaults, before any user override.
     #:
@@ -51,8 +84,25 @@ class CatalogEntry:
             "repo": self.repo,
             "parameters": self.parameters,
             "download_bytes": self.download_bytes,
+            "tier": self.tier,
             "note": self.note,
         }
+
+    @property
+    def repo_directory(self) -> str:
+        """What a download of these weights is named on disk by default.
+
+        `DownloadManager._default_destination` writes to
+        `download_root() / repo.split("/", 1)[1]`. This takes the last segment
+        rather than the second, which is the same string only because
+        `REPO_PATTERN` admits exactly one slash -- worth stating, since the two
+        expressions would diverge the day that pattern allowed a nested id.
+
+        "By default" is the real limit here: `models download --destination`
+        names the directory whatever the caller likes, and that copy is not
+        recognised as this entry.
+        """
+        return self.repo.rsplit("/", 1)[-1]
 
 
 #: The supported set. mxfp4 because that is what GPT-OSS ships as and what the
@@ -62,11 +112,11 @@ class CatalogEntry:
 #:
 #: Stated rather than omitted, so "no catalogue default" is visibly a decision:
 #:
-#: ``max_output_tokens``  the same budget suits both; it is bounded by whatever
-#:                        remains of the context window anyway.
+#: ``max_output_tokens``  one budget suits every entry; it is bounded by
+#:                        whatever remains of the context window anyway.
 #: ``temperature``        GPT-OSS is used here for coding, where the useful
 #: ``top_p``              value does not differ by model size.
-#: ``adapter_path``       no adapter ships with either preset, and the product
+#: ``adapter_path``       no adapter ships with any entry, and the product
 #:                        cannot know where a user's would live. Note that
 #:                        absence here means *no adapter at all* rather than an
 #:                        inherited value: unlike the three above, there is no
@@ -83,11 +133,31 @@ DEFAULTS_INHERITED: tuple[str, ...] = (
 
 SUPPORTED: tuple[CatalogEntry, ...] = (
     CatalogEntry(
+        slug="gpt-oss-coder",
+        display_name="GPT-OSS Coder",
+        repo="exalandru/GPT-OSS-Coder-MLX",
+        # A fine-tune of gpt-oss-120b: 36 layers, 128 experts, mxfp4 experts
+        # with bf16 attention. It is the 120B in every respect the server cares
+        # about, so it inherits the 120B's shipped settings rather than a
+        # separate opinion.
+        parameters="120B",
+        download_bytes=61 * 1024**3,
+        tier=ModelTier.OPTIMIZED,
+        note="Tuned for agentic coding. The recommended model for Codex.",
+        defaults={
+            "display_name": "GPT-OSS Coder",
+            "served_model_name": "gpt-oss-coder",
+            "reasoning_effort": "medium",
+            "context_length": 131072,
+        },
+    ),
+    CatalogEntry(
         slug="gpt-oss-20b",
         display_name="GPT-OSS 20B",
         repo="mlx-community/gpt-oss-20b-MXFP4-Q8",
         parameters="20B",
         download_bytes=13 * 1024**3,
+        tier=ModelTier.STOCK,
         note="Fast to load. Best for ordinary coding turns.",
         defaults={
             "display_name": "GPT-OSS 20B",
@@ -104,6 +174,7 @@ SUPPORTED: tuple[CatalogEntry, ...] = (
         repo="mlx-community/gpt-oss-120b-MXFP4-Q8",
         parameters="120B",
         download_bytes=61 * 1024**3,
+        tier=ModelTier.STOCK,
         note="Needed for namespaced tools: MCP, multi-agent and Codex apps.",
         defaults={
             "display_name": "GPT-OSS 120B",
@@ -136,31 +207,76 @@ def display_name_for(slug: str) -> str | None:
     return None
 
 
+def catalog_slug_for(name: str) -> str:
+    """Which catalogue entry a model directory denotes.
+
+    A directory named exactly as the repository the weights come from *is* that
+    model, whatever its quantisation suffix happens to look like. That rule is
+    derived from `repo`, which this module already owns as the one place the id
+    exists, so recognising a download needs no second table to agree with.
+
+    Everything else falls back to `slug_for`, which strips a known quantisation
+    suffix. That covers the directories a user lays out by hand -- but it is a
+    heuristic over a fixed suffix list, and a repository whose name ends in
+    anything else (`-MLX`, say) is invisible to it. Hence the exact rule first.
+
+    Deliberately case-*sensitive*, and that is the whole safety argument for
+    this function. Hugging Face writes the repository's name exactly, and every
+    stock repository's directory already resolves to its own slug through
+    `slug_for` alone, so an exact match changes the answer for no directory that
+    resolved before. Matching casefolded would widen it: `gpt-oss-20b-mxfp4-q8`
+    is *not* recognised by the suffix table (which is case-sensitive), so a user
+    holding that directory is being served it under that name today, and folding
+    the comparison would silently move it onto the catalogue's name and defaults
+    -- renaming a model that a `config.toml` may already ask for by name.
+
+    Recognising more directories must never be allowed to re-identify one that
+    already worked.
+    """
+    # Imported here rather than at module scope for the same reason `merge`
+    # does it: `models` asks this module for the presets' defaults.
+    from ..models import slug_for
+
+    stripped = name.strip()
+    for entry in SUPPORTED:
+        if stripped == entry.repo_directory:
+            return entry.slug
+    return slug_for(name)
+
+
 def merge(
     reports: list[Any], *, overrides: dict[str, dict[str, Any]] | None = None
 ) -> list[dict[str, Any]]:
     """The catalogue joined with what is installed.
 
     Every supported model appears exactly once, carrying its library report if
-    one matches. Matching is by slug, so a directory named
-    ``gpt-oss-20b-mxfp4-bf16`` is recognised as the 20B rather than shown beside
-    it as a second, unrelated card.
+    one matches. Matching is :func:`catalog_slug_for`, so a directory
+    named ``gpt-oss-20b-mxfp4-bf16`` or ``GPT-OSS-Coder-MLX`` is recognised as
+    the entry it is a copy of, rather than shown beside it as a second,
+    unrelated card.
 
     Models the user installed that are not in the catalogue keep their own
     entries, after the supported ones. They are equally usable; they are just
     not what this build was specialised and measured for.
+
+    The result is grouped by :class:`ModelTier`, in the order the tiers are
+    declared. Grouping here rather than in the caller is what lets a page render
+    sections by walking the list once, and what keeps a fourth catalogue entry
+    from landing in the wrong one because it was appended in the wrong place.
     """
     # Imported here rather than at module scope: `models` asks this module for
     # the presets' defaults, so a top-level import in both directions would be a
     # cycle. Only `merge` needs identity, and only at call time.
-    from ..models import resolved_model_names, slug_for
+    from ..models import resolved_model_names
 
     remaining = list(reports)
 
+    # Stable, so entries within one tier keep the order they are declared in.
+    tier_order = list(ModelTier)
     merged: list[dict[str, Any]] = []
-    for entry in SUPPORTED:
+    for entry in sorted(SUPPORTED, key=lambda item: tier_order.index(item.tier)):
         report = next(
-            (item for item in remaining if slug_for(item.entry.name) == entry.slug),
+            (item for item in remaining if catalog_slug_for(item.entry.name) == entry.slug),
             None,
         )
         if report is not None:
@@ -176,14 +292,13 @@ def merge(
                 "id": names.library_id if names is not None else entry.slug,
                 "served_name": names.served_name if names is not None else entry.slug,
                 "display_name": names.display_name if names is not None else entry.display_name,
-                "supported": True,
                 "installed": report is not None,
                 "model": report.as_dict() if report is not None else None,
             }
         )
 
     for report in remaining:
-        slug = slug_for(report.entry.name)
+        slug = catalog_slug_for(report.entry.name)
         names = resolved_model_names(report, overrides=overrides)
         merged.append(
             {
@@ -194,8 +309,8 @@ def merge(
                 "repo": None,
                 "parameters": None,
                 "download_bytes": 0,
+                "tier": ModelTier.OTHER,
                 "note": "",
-                "supported": False,
                 "installed": True,
                 "model": report.as_dict(),
             }

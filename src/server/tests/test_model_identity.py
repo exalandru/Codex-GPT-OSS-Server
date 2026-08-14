@@ -188,6 +188,68 @@ def test_an_imported_model_is_configured_by_id_and_served_by_name(
     assert engine.loaded_paths == [str(directory)]
 
 
+# -- a catalogue model found on disk ------------------------------------------
+#
+# The catalogue recognises a directory by the repository the weights come from,
+# not by stripping a quantisation suffix off its name. `GPT-OSS-Coder-MLX` is
+# the case that distinguishes the two: nothing strips `-MLX`, so every one of
+# these assertions would fall back to what the bare directory name can say.
+
+
+def test_locating_a_catalogue_model_is_accepted_and_takes_its_shipped_settings(
+    capsys, model_dir, client, engine
+) -> None:
+    """The whole path the Locate… button drives, end to end."""
+    directory = model_dir("GPT-OSS-Coder-MLX")
+
+    # `--expect` is the guard Locate… puts on the directory the user picked. It
+    # runs before the registry is touched, on a name alone.
+    assert run("models", "import", "--expect", "gpt-oss-coder", str(directory)) == 0
+    capsys.readouterr()
+
+    # The catalogue joins it to the entry rather than listing it separately.
+    assert run("models", "catalog") == 0
+    catalogue = json.loads(capsys.readouterr().out)["models"]
+    coder = next(m for m in catalogue if m["slug"] == "gpt-oss-coder")
+    assert coder["installed"] is True
+    assert coder["tier"] == "optimized"
+    assert coder["model"]["name"] == "GPT-OSS-Coder-MLX"
+    # Three catalogue entries and nothing else: no duplicate row beside the card.
+    assert [m["tier"] for m in catalogue] == ["optimized", "stock", "stock"]
+
+    # `models config` resolves it by catalogue slug, and the shipped defaults
+    # are what it reports.
+    assert run("models", "config", "--json", "gpt-oss-coder") == 0
+    effective = json.loads(capsys.readouterr().out)["effective"]
+    assert effective["display_name"] == "GPT-OSS Coder"
+    assert effective["served_model_name"] == "gpt-oss-coder"
+    assert effective["reasoning_effort"] == "medium"
+    assert effective["context_length"] == 131072
+
+    # And that served name is the one that reaches the wire.
+    app_module.refresh_registry(client.app.state.context)
+    published = client.get("/v1/models").json()
+    assert [m["slug"] for m in published["models"]] == ["gpt-oss-coder"]
+    assert published["models"][0]["display_name"] == "GPT-OSS Coder"
+
+
+def test_locating_the_wrong_weights_for_a_catalogue_card_is_still_refused(
+    capsys, model_dir
+) -> None:
+    """The counterfactual for the guard above.
+
+    Recognising more directories must not mean recognising them as anything the
+    caller asks for: a 20B folder offered to the Coder card is still the wrong
+    model, and the library must be left exactly as it was.
+    """
+    directory = model_dir("gpt-oss-20b-mxfp4-bf16")
+
+    assert run("models", "import", "--expect", "gpt-oss-coder", str(directory)) == 1
+
+    assert "gpt-oss-20b" in capsys.readouterr().err
+    assert not models_path().exists() or load_registry().report() == []
+
+
 def test_the_wire_never_accepts_the_library_id(capsys, model_dir, client) -> None:
     """The counterfactual: one Codex-facing name, not two.
 

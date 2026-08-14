@@ -415,6 +415,27 @@ def test_the_full_resolved_configuration_of_the_120b_from_a_clean_store() -> Non
     assert model.max_output_tokens is None
 
 
+def test_the_full_resolved_configuration_of_the_coder_from_a_clean_store() -> None:
+    """The defaults reach the fine-tune through its own directory name.
+
+    The directory is what the download writes -- `GPT-OSS-Coder-MLX`, after the
+    repository -- and no quantisation-suffix rule turns that into
+    `gpt-oss-coder`. If the catalogue join regressed, every assertion here would
+    fall back to what the directory alone can say: the served name would be
+    `gpt-oss-coder-mlx` and the display name the directory itself.
+    """
+    from quantum_codex.canonical import ReasoningEffort
+
+    model = {m.slug: m for m in served_models_from_library([report("GPT-OSS-Coder-MLX")])}[
+        "gpt-oss-coder"
+    ]
+
+    assert model.display_name == "GPT-OSS Coder"
+    assert model.default_reasoning_effort is ReasoningEffort.MEDIUM
+    assert model.context_window == 131072
+    assert model.max_output_tokens is None
+
+
 def test_every_inherited_field_is_declared_rather_than_merely_absent() -> None:
     """An omission has to be a decision someone can read."""
     from quantum_codex.library.catalog import DEFAULTS_INHERITED, SUPPORTED
